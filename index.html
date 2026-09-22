@@ -2813,6 +2813,7 @@ function updateStreakOnSend(convId, myId, otherId){
   const today = localDateStr();
   const yesterday = localDateStr(new Date(Date.now()-86400000));
   const ref = fbDb.collection('conversations').doc(convId);
+  let result = null;
   return fbDb.runTransaction(tx=>tx.get(ref).then(snap=>{
     const data = snap.data() || {};
     const activeToday = Object.assign({}, data.activeToday||{});
@@ -2823,8 +2824,12 @@ function updateStreakOnSend(convId, myId, otherId){
       streak = (lastStreakDate===yesterday) ? streak+1 : 1;
       lastStreakDate = today;
     }
-    tx.update(ref, {activeToday, streak, lastStreakDate});
-  })).catch(err=>console.error('streak update error', err));
+    result = {activeToday, streak, lastStreakDate};
+    tx.update(ref, result);
+  })).then(()=>result).catch(err=>{
+    console.error('streak update error for conv', convId, err);
+    return null;
+  });
 }
 function sendMessage(){
   const convId = DB.activeConvId;
@@ -2852,7 +2857,17 @@ function sendMessage(){
       lastMessage:text, lastMessageAt:firebase.firestore.FieldValue.serverTimestamp(),
       [`unread.${otherId}`]: firebase.firestore.FieldValue.increment(1)
     }).catch(err=>console.error('conversation preview update failed', err));
-    updateStreakOnSend(convId, myId, otherId);
+    updateStreakOnSend(convId, myId, otherId).then(result=>{
+      if(!result) return; // failed — already logged in updateStreakOnSend
+      const localConv = DB.conversations.find(c=>c.id===convId);
+      if(localConv){
+        localConv.streak = result.streak;
+        localConv.lastStreakDate = result.lastStreakDate;
+        localConv.activeToday = result.activeToday;
+      }
+      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+      if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
+    });
   }).catch(err=>toast(err.message));
 }
 
