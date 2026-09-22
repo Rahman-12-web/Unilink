@@ -1595,7 +1595,7 @@ function renderView(view){
   if(view==='groups') renderGroups();
   if(view==='mygroups') renderMyGroups();
   if(view==='events') renderEvents();
-  if(view==='messages') renderMessages();
+  if(view==='messages'){ renderMessages(); refreshConversationsOnce(); }
   if(view==='conversation') renderConversation();
   if(view==='worldchat') renderWorldChat();
   if(view==='notifications') renderNotifications();
@@ -2597,6 +2597,25 @@ function localDateStr(date){
   const d = date || new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
+function refreshConversationsOnce(){
+  const myId = DB.currentUserId;
+  if(!myId) return;
+  fbDb.collection('conversations').where('participants','array-contains', myId).get()
+    .then(snap=>{
+      snap.docs.forEach(d=>{
+        const data = d.data();
+        const localConv = DB.conversations.find(c=>c.id===d.id);
+        if(localConv){
+          localConv.streak = data.streak||0;
+          localConv.lastStreakDate = data.lastStreakDate||null;
+          localConv.activeToday = data.activeToday||{};
+          localConv.unreadCount = (data.unread||{})[myId] || 0;
+        }
+      });
+      if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
+      updateMessagesBadge();
+    }).catch(err=>console.error('conversations refresh error', err));
+}
 function subscribeMyConversations(){
   if(conversationsUnsub) conversationsUnsub();
   let firstConversationsLoad = true;
@@ -2741,6 +2760,23 @@ function openConversation(convId){
   fbDb.collection('conversations').doc(convId).update({[`unread.${myId}`]: 0}).catch(()=>{});
   const conv = DB.conversations.find(c=>c.id===convId);
   if(conv){ conv.unreadCount = 0; updateMessagesBadge(); }
+  // Always pull a fresh, direct read of the conversation doc the moment a
+  // chat is opened. This guarantees the streak badge shows the true,
+  // currently-saved value right away — it doesn't wait on (or depend on
+  // the timing of) the background live listener, which can lag for a
+  // moment after the tab has been backgrounded and reconnects (e.g.
+  // switching apps and coming back on a phone with many tabs open).
+  fbDb.collection('conversations').doc(convId).get().then(snap=>{
+    if(!snap.exists) return;
+    const data = snap.data();
+    const localConv = DB.conversations.find(c=>c.id===convId);
+    if(localConv){
+      localConv.streak = data.streak||0;
+      localConv.lastStreakDate = data.lastStreakDate||null;
+      localConv.activeToday = data.activeToday||{};
+      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+    }
+  }).catch(err=>console.error('conversation refresh error', err));
 }
 function subscribeConversationMessages(convId){
   if(conversationMessagesUnsub) conversationMessagesUnsub();
