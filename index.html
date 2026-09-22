@@ -2615,17 +2615,20 @@ function subscribeMyConversations(){
           unreadCount: (data.unread||{})[myId] || 0,
         });
       });
-      // Fire a real notification (bell icon, not just the Messages badge)
-      // the moment a message arrives from someone new — whether or not
-      // you follow them, and without you ever having to search for them
-      // first. Skipped on the very first snapshot after login so old
-      // unread messages don't all re-notify on every app open.
+      // Fire a real notification (bell icon + an on-screen toast, not just
+      // the Messages badge) the moment a message arrives from ANYONE —
+      // someone brand new or someone you've been chatting with for
+      // months — and no matter which screen of the app you're currently
+      // on. You never have to open that person's chat first to know a
+      // message came in. Skipped on the very first snapshot after login
+      // so old unread messages don't all re-notify on every app open.
       if(!firstConversationsLoad){
         DB.conversations.forEach(c=>{
           const wasUnread = previousUnreadById[c.id] || 0;
           const isOpenRightNow = DB.activeConvId===c.id && document.getElementById('view-conversation')?.classList.contains('active');
           if(c.unreadCount>0 && c.unreadCount>wasUnread && !isOpenRightNow){
             DB.notifications.unshift({id:'n'+Date.now()+c.id,icon:'💬',text:`New message from ${c.otherName}`,time:'now',unread:true});
+            toast(`💬 New message from ${c.otherName}`);
           }
         });
         renderNotifications();
@@ -2650,7 +2653,7 @@ function updateMessagesBadge(){
    How it works, exactly matching what was asked for:
    - The moment BOTH people have sent at least one message in the same
      local calendar day, the streak increments — counted the instant the
-     second person's message is sent (see updateStreakOnSend below), no
+     second person's message is sent (see the transaction in sendMessage), no
      matter what time of day that happens to be.
    - "Today" always means the device's local calendar date, so the count
      rolls over at 12am local time, not UTC.
@@ -2809,28 +2812,6 @@ function renderConversation(){
   `;
   setTimeout(()=>{ const el=document.getElementById('chatMsgs'); if(el) el.scrollTop=el.scrollHeight; },0);
 }
-function updateStreakOnSend(convId, myId, otherId){
-  const today = localDateStr();
-  const yesterday = localDateStr(new Date(Date.now()-86400000));
-  const ref = fbDb.collection('conversations').doc(convId);
-  let result = null;
-  return fbDb.runTransaction(tx=>tx.get(ref).then(snap=>{
-    const data = snap.data() || {};
-    const activeToday = Object.assign({}, data.activeToday||{});
-    activeToday[myId] = today;
-    let streak = data.streak||0;
-    let lastStreakDate = data.lastStreakDate||null;
-    if(activeToday[otherId]===today && lastStreakDate!==today){
-      streak = (lastStreakDate===yesterday) ? streak+1 : 1;
-      lastStreakDate = today;
-    }
-    result = {activeToday, streak, lastStreakDate};
-    tx.update(ref, result);
-  })).then(()=>result).catch(err=>{
-    console.error('streak update error for conv', convId, err);
-    return null;
-  });
-}
 function sendMessage(){
   const convId = DB.activeConvId;
   const conv = DB.conversations.find(c=>c.id===convId);
@@ -2849,26 +2830,49 @@ function sendMessage(){
   DB.activeConvMessages = (DB.activeConvMessages||[]).concat([{from:myId, text, _pending:true}]);
   DB.messagesByConv[convId] = DB.activeConvMessages;
   renderConversation();
+
+  const today = localDateStr();
+  const yesterday = localDateStr(new Date(Date.now()-86400000));
   const expireAt = firebase.firestore.Timestamp.fromDate(new Date(Date.now()+7*24*60*60*1000));
-  fbDb.collection('conversations').doc(convId).collection('messages').add({
-    from: myId, text, createdAt: firebase.firestore.FieldValue.serverTimestamp(), expireAt
-  }).then(()=>{
-    fbDb.collection('conversations').doc(convId).update({
-      lastMessage:text, lastMessageAt:firebase.firestore.FieldValue.serverTimestamp(),
-      [`unread.${otherId}`]: firebase.firestore.FieldValue.increment(1)
-    }).catch(err=>console.error('conversation preview update failed', err));
-    updateStreakOnSend(convId, myId, otherId).then(result=>{
-      if(!result) return; // failed — already logged in updateStreakOnSend
-      const localConv = DB.conversations.find(c=>c.id===convId);
-      if(localConv){
-        localConv.streak = result.streak;
-        localConv.lastStreakDate = result.lastStreakDate;
-        localConv.activeToday = result.activeToday;
-      }
-      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
-      if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
+  const convRef = fbDb.collection('conversations').doc(convId);
+  const msgRef = convRef.collection('messages').doc();
+
+  // Everything — the message itself, the "last message" preview, the
+  // unread bump, AND the streak — is written as ONE atomic transaction.
+  // That matters for the streak specifically: it means the other person's
+  // live listener receives the new message and the freshly-updated streak
+  // in the exact same real-time update, the moment it happens. They never
+  // need to send anything themselves to see it move.
+  fbDb.runTransaction(tx=>tx.get(convRef).then(snap=>{
+    const data = snap.data() || {};
+    const activeToday = Object.assign({}, data.activeToday||{});
+    activeToday[myId] = today;
+    let streak = data.streak||0;
+    let lastStreakDate = data.lastStreakDate||null;
+    if(activeToday[otherId]===today && lastStreakDate!==today){
+      streak = (lastStreakDate===yesterday) ? streak+1 : 1;
+      lastStreakDate = today;
+    }
+    tx.set(msgRef, { from: myId, text, createdAt: firebase.firestore.FieldValue.serverTimestamp(), expireAt });
+    tx.update(convRef, {
+      lastMessage: text,
+      lastMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
+      [`unread.${otherId}`]: firebase.firestore.FieldValue.increment(1),
+      activeToday, streak, lastStreakDate
     });
-  }).catch(err=>toast(err.message));
+    return {streak, lastStreakDate, activeToday};
+  })).then(result=>{
+    // Also apply it to our own local copy right away, so the sender's own
+    // screen doesn't have to wait on the listener round-trip either.
+    const localConv = DB.conversations.find(c=>c.id===convId);
+    if(localConv && result){
+      localConv.streak = result.streak;
+      localConv.lastStreakDate = result.lastStreakDate;
+      localConv.activeToday = result.activeToday;
+    }
+    if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+    if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
+  }).catch(err=>{ console.error('sendMessage error', err); toast(err.message); });
 }
 
 /* ================= WORLD CHAT (real Firestore backend, live for everyone) ================= */
