@@ -1505,6 +1505,7 @@ function enterApp(){
   showView('homeapp');
   window.scrollTo(0,0);
   sendWeeklyDigest();
+  scheduleMidnightRefresh();
 }
 function showWelcomeBanner(name){
   setTimeout(()=>{
@@ -2644,12 +2645,49 @@ function updateMessagesBadge(){
     if(btn) btn.insertAdjacentHTML('afterbegin', `<span class="bn-badge">${total>9?'9+':total}</span>`);
   }
 }
+/* Chat streaks (conversation-level, separate from the daily login streak)
+   live in each conversation doc as {streak, lastStreakDate, activeToday}.
+   How it works, exactly matching what was asked for:
+   - The moment BOTH people have sent at least one message in the same
+     local calendar day, the streak increments — counted the instant the
+     second person's message is sent (see updateStreakOnSend below), no
+     matter what time of day that happens to be.
+   - "Today" always means the device's local calendar date, so the count
+     rolls over at 12am local time, not UTC.
+   - If a full calendar day passes with no message from BOTH sides, the
+     next mutual exchange restarts the streak at 1 instead of continuing
+     the old count (see the `streak = (lastStreakDate===yesterday) ? ... : 1`
+     line below).
+   - effectiveStreak() below is what actually decides what's shown: if
+     lastStreakDate isn't today or yesterday, it displays 0 — even though
+     the raw number is still sitting in Firestore — so a lapsed streak
+     visually resets right at midnight without needing to rewrite the doc. */
 function effectiveStreak(conv){
   if(!conv || !conv.lastStreakDate) return 0;
   const today = localDateStr();
   const yesterday = localDateStr(new Date(Date.now()-86400000));
   return (conv.lastStreakDate===today || conv.lastStreakDate===yesterday) ? (conv.streak||0) : 0;
 }
+// effectiveStreak() only re-evaluates when something re-renders the screen
+// (a new message, switching views, etc). If the app is just left open
+// past midnight with nothing new happening, nothing would trigger that
+// re-render — so a lapsed streak could keep showing its old number until
+// the next click. This schedules one automatic re-render right at the
+// next local midnight (and every midnight after that) so streaks that
+// should reset to 0 visibly do so exactly at 12am, with the app just
+// sitting open.
+function scheduleMidnightRefresh(){
+  const now = new Date();
+  const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()+1, 0, 0, 5); // 5s past midnight, safely past the rollover
+  setTimeout(function(){
+    if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
+    if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+    if(document.getElementById('view-homeapp')?.classList.contains('active')) renderHome();
+    if(document.getElementById('view-leaderboard')?.classList.contains('active')) renderLeaderboard();
+    scheduleMidnightRefresh(); // reschedule for the following midnight
+  }, nextMidnight - now);
+}
+
 function messageUser(uid, name){
   const myId = DB.currentUserId;
   if(!myId) return;
