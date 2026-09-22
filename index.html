@@ -1239,15 +1239,50 @@ function toast(msg){
   setTimeout(()=>el.remove(),2800);
 }
 
-/* ---------------- Landing navigation ----------------
-   Landing is a tab-based single page: only one .landing-view
-   is visible at a time, switched instantly (no scrolling). */
+/* ---------------- Back-button / browser history support ----------------
+   This is a single-page app: normally the URL never changes, so pressing
+   the phone's Back button has nothing to "undo" and just leaves the site
+   entirely. To fix that, every navigation (landing tab, login/register
+   screen, or in-app view) pushes a history entry describing that screen.
+   Pressing Back then fires 'popstate', and we re-render whatever screen
+   is in that entry instead of letting the browser leave the page. */
+let suppressHistoryPush = false;
+function pushNavState(state){
+  if(suppressHistoryPush) return;
+  history.pushState(state, '');
+}
+window.addEventListener('popstate', function(e){
+  const state = e.state;
+  if(!state) return; // nothing we recognize — let the browser do its default thing
+  suppressHistoryPush = true;
+  try{
+    if(state.screen==='app' && DB.currentUserId){
+      DB.viewingProfileId = state.viewingProfileId || null;
+      DB.activeConvId = state.activeConvId || null;
+      showView(state.view);
+    } else if(state.screen==='auth' && !DB.currentUserId){
+      showAuth(state.which);
+    } else if(state.screen==='landing' && !DB.currentUserId){
+      document.getElementById('authLogin').classList.add('hidden');
+      document.getElementById('authRegister').classList.add('hidden');
+      document.getElementById('landing').style.display='block';
+      landingShowView(state.view);
+    }
+  } finally {
+    suppressHistoryPush = false;
+  }
+});
+// Establish a base "home" entry on first load so the very first in-app
+// navigation has something to push on top of.
+history.replaceState({screen:'landing', view:'home'}, '');
+
 function landingShowView(name){
   document.querySelectorAll('.landing-view').forEach(v=>v.classList.remove('active'));
   document.getElementById('lv-'+name)?.classList.add('active');
   document.querySelectorAll('.lbn-item').forEach(b=>b.classList.toggle('active', b.dataset.lv===name));
   toggleMobileMenu(false);
   window.scrollTo(0,0);
+  pushNavState({screen:'landing', view:name});
   return false;
 }
 function toggleMobileMenu(open){
@@ -1269,6 +1304,7 @@ function showAuth(which){
   const loginErr = document.getElementById('loginError'); if(loginErr) loginErr.textContent='';
   const regErr = document.getElementById('registerError'); if(regErr) regErr.textContent='';
   window.scrollTo(0,0);
+  pushNavState({screen:'auth', which});
 }
 
 /* ---------------- Auth actions (real Firebase Authentication) ---------------- */
@@ -1318,13 +1354,24 @@ function doRegister(e){
   if(password.length < 6){ errEl.textContent = 'Password must be at least 6 characters.'; return false; }
   setBtnLoading('registerSubmitBtn', true, 'Create Account');
   const admin = isAdminEmail(email);
-  fbDb.collection('users').where('username','==',username).limit(1).get()
-    .then(snap=>{
-      if(!snap.empty){ return Promise.reject({code:'username-taken'}); }
-      return fbAuth.createUserWithEmailAndPassword(email, password);
-    })
+  // IMPORTANT: we create the Firebase Auth account FIRST, before touching
+  // Firestore at all. Firestore rules require the caller to be signed in
+  // to read the `users` collection (needed for the username-uniqueness
+  // check below) — checking username BEFORE auth existed used to throw
+  // "Missing or insufficient permissions" for every single registration.
+  // If the username turns out to be taken, we simply delete the
+  // just-created auth account again so the person can retry cleanly.
+  let createdCred = null;
+  fbAuth.createUserWithEmailAndPassword(email, password)
     .then(cred=>{
-      const createdUid = cred.user.uid;
+      createdCred = cred;
+      return fbDb.collection('users').where('username','==',username).limit(1).get();
+    })
+    .then(snap=>{
+      if(!snap.empty){
+        return createdCred.user.delete().then(()=>Promise.reject({code:'username-taken'}));
+      }
+      const createdUid = createdCred.user.uid;
       const ulid = genUnilinkId(DB.users.map(u=>u.ulid));
       const profile = {name,username,email,phone,ulid,faculty,department,level,bio:'',
         verification: 'verified', role: admin ? 'admin' : 'student',
@@ -1344,6 +1391,10 @@ function doRegister(e){
         errEl.textContent = 'That username is already taken by someone else — please choose another.';
       } else {
         errEl.textContent = friendlyAuthError(err);
+        // Something else went wrong after the auth account was created
+        // (e.g. the profile write failed) — clean it up so a retry with
+        // the same email doesn't hit "email already in use".
+        if(createdCred && createdCred.user){ createdCred.user.delete().catch(()=>{}); }
       }
     });
   return false;
@@ -1527,6 +1578,7 @@ function showView(view){
   renderView(view);
   document.querySelector('.app-main').scrollTo?.(0,0);
   window.scrollTo(0,0);
+  pushNavState({screen:'app', view, viewingProfileId: DB.viewingProfileId||null, activeConvId: DB.activeConvId||null});
 }
 
 function renderView(view){
@@ -2546,9 +2598,12 @@ function localDateStr(date){
 }
 function subscribeMyConversations(){
   if(conversationsUnsub) conversationsUnsub();
+  let firstConversationsLoad = true;
   conversationsUnsub = fbDb.collection('conversations').where('participants','array-contains', DB.currentUserId)
     .onSnapshot(snap=>{
       const myId = DB.currentUserId;
+      const previousUnreadById = {};
+      DB.conversations.forEach(c=>{ previousUnreadById[c.id] = c.unreadCount||0; });
       DB.conversations = snap.docs.map(d=>{
         const data = d.data();
         const otherId = (data.participants||[]).find(p=>p!==myId) || myId;
@@ -2559,6 +2614,23 @@ function subscribeMyConversations(){
           unreadCount: (data.unread||{})[myId] || 0,
         });
       });
+      // Fire a real notification (bell icon, not just the Messages badge)
+      // the moment a message arrives from someone new — whether or not
+      // you follow them, and without you ever having to search for them
+      // first. Skipped on the very first snapshot after login so old
+      // unread messages don't all re-notify on every app open.
+      if(!firstConversationsLoad){
+        DB.conversations.forEach(c=>{
+          const wasUnread = previousUnreadById[c.id] || 0;
+          const isOpenRightNow = DB.activeConvId===c.id && document.getElementById('view-conversation')?.classList.contains('active');
+          if(c.unreadCount>0 && c.unreadCount>wasUnread && !isOpenRightNow){
+            DB.notifications.unshift({id:'n'+Date.now()+c.id,icon:'💬',text:`New message from ${c.otherName}`,time:'now',unread:true});
+          }
+        });
+        renderNotifications();
+        updateNotifBadge();
+      }
+      firstConversationsLoad = false;
       if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
       if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
       updateMessagesBadge();
@@ -2936,21 +3008,23 @@ function runGlobalSearch(q){
   const groups = DB.studyGroups.filter(g=>g.name.toLowerCase().includes(qLower)||g.course.toLowerCase().includes(qLower));
   const events = DB.events.filter(e=>e.name.toLowerCase().includes(qLower));
 
+  // Students are only found by UniLink ID or @username — never by real
+  // name — so people can control their own discoverability.
+  const qUsername = q.replace(/^@/,'');
+  const qUsernameLower = qUsername.toLowerCase();
   const lookups = [
     /^UL_/i.test(q) ? fbDb.collection('users').where('ulid','==',q.toUpperCase()).get().catch(()=>({docs:[]})) : Promise.resolve({docs:[]}),
-    fbDb.collection('users').orderBy('name').startAt(q).endAt(q+'\uf8ff').limit(10).get().catch(()=>({docs:[]})),
-    fbDb.collection('users').where('username','==',q).limit(1).get().catch(()=>({docs:[]})),
-    fbDb.collection('users').orderBy('username').startAt(q).endAt(q+'\uf8ff').limit(10).get().catch(()=>({docs:[]})),
+    fbDb.collection('users').where('username','==',qUsername).limit(1).get().catch(()=>({docs:[]})),
+    fbDb.collection('users').orderBy('username').startAt(qUsername).endAt(qUsername+'\uf8ff').limit(10).get().catch(()=>({docs:[]})),
   ];
 
-  Promise.all(lookups).then(([ulidSnap, nameSnap, usernameExactSnap, usernamePrefixSnap])=>{
+  Promise.all(lookups).then(([ulidSnap, usernameExactSnap, usernamePrefixSnap])=>{
     const foundMap = {};
     ulidSnap.docs.forEach(d=>foundMap[d.id]=Object.assign({id:d.id},d.data()));
-    nameSnap.docs.forEach(d=>foundMap[d.id]=Object.assign({id:d.id},d.data()));
     usernameExactSnap.docs.forEach(d=>foundMap[d.id]=Object.assign({id:d.id},d.data()));
     usernamePrefixSnap.docs.forEach(d=>foundMap[d.id]=Object.assign({id:d.id},d.data()));
-    DB.users.filter(u=>u.name && u.name.toLowerCase().includes(qLower)).forEach(u=>{ if(!foundMap[u.id]) foundMap[u.id]=u; });
-    DB.users.filter(u=>u.username && u.username.toLowerCase().includes(qLower)).forEach(u=>{ if(!foundMap[u.id]) foundMap[u.id]=u; });
+    DB.users.filter(u=>u.username && u.username.toLowerCase().includes(qUsernameLower)).forEach(u=>{ if(!foundMap[u.id]) foundMap[u.id]=u; });
+    DB.users.filter(u=>u.ulid && u.ulid.toLowerCase()===qLower).forEach(u=>{ if(!foundMap[u.id]) foundMap[u.id]=u; });
     const students = Object.values(foundMap).filter(u=>u.id!==DB.currentUserId);
     students.forEach(s=>{ if(!DB.users.find(u=>u.id===s.id)) DB.users.push(s); });
 
