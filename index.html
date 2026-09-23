@@ -1412,6 +1412,8 @@ function doLogout(){
   if(leaderboardUnsub){ leaderboardUnsub(); leaderboardUnsub=null; }
   if(pollsUnsub){ pollsUnsub(); pollsUnsub=null; }
   DB.currentUserId = null;
+  DB.conversations = [];
+  conversationsEverSynced = false;
   document.getElementById('app').style.display='none';
   document.getElementById('landing').style.display='block';
   landingShowView('home');
@@ -1506,6 +1508,7 @@ function enterApp(){
   window.scrollTo(0,0);
   sendWeeklyDigest();
   scheduleMidnightRefresh();
+  refreshConversationsOnce();
 }
 function showWelcomeBanner(name){
   setTimeout(()=>{
@@ -2597,28 +2600,72 @@ function localDateStr(date){
   const d = date || new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
+// Shared across subscribeMyConversations and refreshConversationsOnce so
+// that whichever of them completes first right after login is treated as
+// the "initial" sync (no toasts for messages you already had unread),
+// and every sync after that fires notifications normally.
+let conversationsEverSynced = false;
 function refreshConversationsOnce(){
   const myId = DB.currentUserId;
   if(!myId) return;
   fbDb.collection('conversations').where('participants','array-contains', myId).get()
     .then(snap=>{
+      const previousUnreadById = {};
+      DB.conversations.forEach(c=>{ previousUnreadById[c.id] = c.unreadCount||0; });
+      const seenIds = new Set();
       snap.docs.forEach(d=>{
+        seenIds.add(d.id);
         const data = d.data();
-        const localConv = DB.conversations.find(c=>c.id===d.id);
-        if(localConv){
-          localConv.streak = data.streak||0;
-          localConv.lastStreakDate = data.lastStreakDate||null;
-          localConv.activeToday = data.activeToday||{};
-          localConv.unreadCount = (data.unread||{})[myId] || 0;
-        }
+        const otherId = (data.participants||[]).find(p=>p!==myId) || myId;
+        const fresh = Object.assign({id:d.id}, data, {
+          otherId,
+          otherName: (data.participantNames||{})[otherId] || 'Student',
+          lastMessageAtMillis: (data.lastMessageAt && data.lastMessageAt.toMillis) ? data.lastMessageAt.toMillis() : 0,
+          unreadCount: (data.unread||{})[myId] || 0,
+        });
+        const idx = DB.conversations.findIndex(c=>c.id===d.id);
+        if(idx>-1) DB.conversations[idx] = fresh; else DB.conversations.push(fresh);
       });
+      // A conversation that's disappeared server-side (shouldn't normally
+      // happen, but just in case) shouldn't linger locally either.
+      DB.conversations = DB.conversations.filter(c=>seenIds.has(c.id));
+      // Same "you have a new message" toast + bell notification treatment
+      // as the live listener gets — this is what makes a first message
+      // from someone brand new show up the moment you open the app or the
+      // Messages tab, with no search needed first. Skipped on the very
+      // first sync after login so already-unread messages don't spam
+      // toasts every time you open the app.
+      if(conversationsEverSynced){
+        DB.conversations.forEach(c=>{
+          const wasUnread = previousUnreadById[c.id] || 0;
+          const isOpenRightNow = DB.activeConvId===c.id && document.getElementById('view-conversation')?.classList.contains('active');
+          if(c.unreadCount>0 && c.unreadCount>wasUnread && !isOpenRightNow){
+            DB.notifications.unshift({id:'n'+Date.now()+c.id,icon:'💬',text:`New message from ${c.otherName}`,time:'now',unread:true});
+            toast(`💬 New message from ${c.otherName}`);
+          }
+        });
+        renderNotifications();
+        updateNotifBadge();
+      }
+      conversationsEverSynced = true;
       if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
+      if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
       updateMessagesBadge();
     }).catch(err=>console.error('conversations refresh error', err));
 }
+// Whenever the tab/app comes back to the foreground (switching back from
+// another app, unlocking the phone, or returning to this tab after the
+// browser suspended it in the background), force an immediate refresh.
+// This is exactly the moment a live Firestore listener can be slow to
+// reconnect, which is what was causing new messages from people you
+// hadn't searched for yet to seem invisible until you searched them up.
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState==='visible' && DB.currentUserId){
+    refreshConversationsOnce();
+  }
+});
 function subscribeMyConversations(){
   if(conversationsUnsub) conversationsUnsub();
-  let firstConversationsLoad = true;
   conversationsUnsub = fbDb.collection('conversations').where('participants','array-contains', DB.currentUserId)
     .onSnapshot(snap=>{
       const myId = DB.currentUserId;
@@ -2639,9 +2686,9 @@ function subscribeMyConversations(){
       // someone brand new or someone you've been chatting with for
       // months — and no matter which screen of the app you're currently
       // on. You never have to open that person's chat first to know a
-      // message came in. Skipped on the very first snapshot after login
-      // so old unread messages don't all re-notify on every app open.
-      if(!firstConversationsLoad){
+      // message came in. Skipped on the very first sync after login so
+      // old unread messages don't all re-notify on every app open.
+      if(conversationsEverSynced){
         DB.conversations.forEach(c=>{
           const wasUnread = previousUnreadById[c.id] || 0;
           const isOpenRightNow = DB.activeConvId===c.id && document.getElementById('view-conversation')?.classList.contains('active');
@@ -2653,7 +2700,7 @@ function subscribeMyConversations(){
         renderNotifications();
         updateNotifBadge();
       }
-      firstConversationsLoad = false;
+      conversationsEverSynced = true;
       if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
       if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
       updateMessagesBadge();
