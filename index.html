@@ -2698,7 +2698,7 @@ function refreshConversationsOnce(){
       }
       conversationsEverSynced = true;
       if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
-      if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+      if(document.getElementById('view-conversation')?.classList.contains('active') && !isTypingInChat()) renderConversation();
       updateMessagesBadge();
       const totalUnread = DB.conversations.reduce((s,c)=>s+(c.unreadCount||0),0);
       debugLog(`manual/poll sync: ${snap.docs.length} convs, totalUnread=${totalUnread}`);
@@ -2715,7 +2715,8 @@ document.addEventListener('visibilitychange', function(){
     refreshConversationsOnce();
   }
 });
-function subscribeMyConversations(){
+function subscribeMyConversations(retryDelayMs){
+  const delay = retryDelayMs || 3000;
   if(conversationsUnsub) conversationsUnsub();
   conversationsUnsub = fbDb.collection('conversations').where('participants','array-contains', DB.currentUserId)
     .onSnapshot(snap=>{
@@ -2753,19 +2754,21 @@ function subscribeMyConversations(){
       }
       conversationsEverSynced = true;
       if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
-      if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+      if(document.getElementById('view-conversation')?.classList.contains('active') && !isTypingInChat()) renderConversation();
       updateMessagesBadge();
       const totalUnread = DB.conversations.reduce((s,c)=>s+(c.unreadCount||0),0);
       debugLog(`LIVE listener fired: ${snap.docs.length} convs, totalUnread=${totalUnread}, fromCache=${snap.metadata.fromCache}`);
     }, err=>{
       // Once onSnapshot's error callback fires, Firestore has terminated
       // THIS listener for good — it will never fire again on its own.
-      // Re-subscribing from scratch after a short pause is what actually
-      // recovers, instead of leaving the app silently relying only on the
-      // slower polling fallback for the rest of the session.
+      // Re-subscribing after a pause is what actually recovers. The delay
+      // backs off (3s, 6s, 12s... capped at 60s) instead of hammering
+      // retries indefinitely, which was also redrawing the chat screen
+      // every few seconds and kept dismissing the keyboard while typing.
       console.error('conversations snapshot error', err);
-      debugLog('LISTENER ERROR (auto-resubscribing in 3s): '+err.message);
-      setTimeout(()=>{ if(DB.currentUserId) subscribeMyConversations(); }, 3000);
+      debugLog(`LISTENER ERROR (retrying in ${Math.round(delay/1000)}s): ${err.message}`);
+      const nextDelay = Math.min(delay*2, 60000);
+      setTimeout(()=>{ if(DB.currentUserId) subscribeMyConversations(nextDelay); }, delay);
     });
 }
 function updateMessagesBadge(){
@@ -2812,7 +2815,7 @@ function scheduleMidnightRefresh(){
   const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()+1, 0, 0, 5); // 5s past midnight, safely past the rollover
   setTimeout(function(){
     if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
-    if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+    if(document.getElementById('view-conversation')?.classList.contains('active') && !isTypingInChat()) renderConversation();
     if(document.getElementById('view-homeapp')?.classList.contains('active')) renderHome();
     if(document.getElementById('view-leaderboard')?.classList.contains('active')) renderLeaderboard();
     scheduleMidnightRefresh(); // reschedule for the following midnight
@@ -2883,7 +2886,7 @@ function openConversation(convId){
       localConv.streak = data.streak||0;
       localConv.lastStreakDate = data.lastStreakDate||null;
       localConv.activeToday = data.activeToday||{};
-      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active') && !isTypingInChat()) renderConversation();
     }
   }).catch(err=>console.error('conversation refresh error', err));
 }
@@ -2898,7 +2901,7 @@ function subscribeConversationMessages(convId){
       const msgs = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
       DB.activeConvMessages = msgs;
       DB.messagesByConv[convId] = msgs;
-      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active') && !isTypingInChat()) renderConversation();
       // Self-heal: whoever opens this chat re-syncs the parent conversation's
       // "last message" preview to match the real messages here. This covers
       // the case where the last sender's own preview-update write didn't
@@ -2917,6 +2920,12 @@ function subscribeConversationMessages(convId){
       }
     }, err=>console.error('messages snapshot error', err));
 }
+// Background syncs should never interrupt someone mid-message — redrawing
+// the chat screen while the keyboard is up and the input has focus is
+// what was dismissing the keyboard while typing. Any re-render triggered
+// by a background listener/refresh (not by the person's own send action)
+// checks this first and simply skips the redraw if they're actively typing.
+function isTypingInChat(){ return document.activeElement && document.activeElement.id==='chatInput'; }
 function renderConversation(){
   const conv = DB.conversations.find(c=>c.id===DB.activeConvId);
   if(!conv){
