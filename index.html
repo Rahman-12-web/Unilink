@@ -1080,6 +1080,7 @@ footer ul a:hover{color:#fff;}
       <!-- SETTINGS -->
       <div class="view" id="view-settings">
         <div class="page-head"><div><h1>Settings</h1></div></div>
+        <div style="background:#22C55E22;border:1px solid #22C55E;border-radius:10px;padding:8px 12px;margin-bottom:14px;font-size:12.5px;font-weight:700;color:#22C55E;text-align:center;">BUILD: 2026-09-23-diag1 — if you see this, the new file is live</div>
         <div class="card" style="padding:18px;margin-bottom:14px;">
           <h3 style="margin-top:0;font-size:15px;">Account</h3>
           <div class="field"><label>Full name</label><input type="text" id="setName"></div>
@@ -2638,23 +2639,19 @@ function copyDebugLog(){
     toast('Could not copy — screenshot it instead');
   }
 }
-function forceFirestoreReconnect(){
-  return fbDb.disableNetwork().then(()=>fbDb.enableNetwork()).catch(err=>console.error('reconnect error', err));
-}
 function manualRefreshMessages(){
   const btn = document.getElementById('msgRefreshBtn');
   if(btn){ btn.textContent = '🔄 Refreshing…'; btn.disabled = true; }
-  forceFirestoreReconnect().then(refreshConversationsOnce).finally(()=>{
-    setTimeout(()=>{
-      if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
-    }, 300);
-  });
+  refreshConversationsOnce();
+  setTimeout(()=>{
+    if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
+  }, 900);
 }
 let conversationsPollInterval = null;
 function startConversationsPolling(){
   if(conversationsPollInterval) clearInterval(conversationsPollInterval);
   conversationsPollInterval = setInterval(()=>{
-    if(DB.currentUserId) forceFirestoreReconnect().then(refreshConversationsOnce);
+    if(DB.currentUserId) refreshConversationsOnce();
   }, 20000);
 }
 function refreshConversationsOnce(){
@@ -2715,7 +2712,7 @@ function refreshConversationsOnce(){
 // seem invisible until you manually searched/opened the chat.
 document.addEventListener('visibilitychange', function(){
   if(document.visibilityState==='visible' && DB.currentUserId){
-    forceFirestoreReconnect().then(refreshConversationsOnce);
+    refreshConversationsOnce();
   }
 });
 function subscribeMyConversations(){
@@ -2760,7 +2757,16 @@ function subscribeMyConversations(){
       updateMessagesBadge();
       const totalUnread = DB.conversations.reduce((s,c)=>s+(c.unreadCount||0),0);
       debugLog(`LIVE listener fired: ${snap.docs.length} convs, totalUnread=${totalUnread}, fromCache=${snap.metadata.fromCache}`);
-    }, err=>{ console.error('conversations snapshot error', err); debugLog('LISTENER ERROR: '+err.message); });
+    }, err=>{
+      // Once onSnapshot's error callback fires, Firestore has terminated
+      // THIS listener for good — it will never fire again on its own.
+      // Re-subscribing from scratch after a short pause is what actually
+      // recovers, instead of leaving the app silently relying only on the
+      // slower polling fallback for the rest of the session.
+      console.error('conversations snapshot error', err);
+      debugLog('LISTENER ERROR (auto-resubscribing in 3s): '+err.message);
+      setTimeout(()=>{ if(DB.currentUserId) subscribeMyConversations(); }, 3000);
+    });
 }
 function updateMessagesBadge(){
   const total = DB.conversations.filter(c=>!hiddenConvIds.has(c.id)).reduce((s,c)=>s+(c.unreadCount||0),0);
