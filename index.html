@@ -1032,7 +1032,7 @@ footer ul a:hover{color:#fff;}
 
       <!-- MESSAGES -->
       <div class="view" id="view-messages">
-        <div class="page-head"><div><h1>Messages</h1></div></div>
+        <div class="page-head"><div><h1>Messages</h1></div><button id="msgRefreshBtn" onclick="manualRefreshMessages()" style="background:none;border:1px solid var(--line);border-radius:10px;padding:6px 10px;color:var(--ink);font-size:13px;cursor:pointer;">🔄 Refresh</button></div>
         <div class="conv-item" style="background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:10px;cursor:pointer;" onclick="showView('worldchat')">
           <div class="avatar-circle" style="background:var(--grad-primary);">🌍</div>
           <div class="cbody"><div class="cname">World Chat</div><div class="clast">Everyone on campus, one big group chat</div></div>
@@ -1411,6 +1411,7 @@ function doLogout(){
   if(conversationMessagesUnsub){ conversationMessagesUnsub(); conversationMessagesUnsub=null; }
   if(leaderboardUnsub){ leaderboardUnsub(); leaderboardUnsub=null; }
   if(pollsUnsub){ pollsUnsub(); pollsUnsub=null; }
+  if(conversationsPollInterval){ clearInterval(conversationsPollInterval); conversationsPollInterval=null; }
   DB.currentUserId = null;
   DB.conversations = [];
   conversationsEverSynced = false;
@@ -1509,6 +1510,7 @@ function enterApp(){
   sendWeeklyDigest();
   scheduleMidnightRefresh();
   refreshConversationsOnce();
+  startConversationsPolling();
 }
 function showWelcomeBanner(name){
   setTimeout(()=>{
@@ -2605,6 +2607,21 @@ function localDateStr(date){
 // the "initial" sync (no toasts for messages you already had unread),
 // and every sync after that fires notifications normally.
 let conversationsEverSynced = false;
+function manualRefreshMessages(){
+  const btn = document.getElementById('msgRefreshBtn');
+  if(btn){ btn.textContent = '🔄 Refreshing…'; btn.disabled = true; }
+  refreshConversationsOnce();
+  setTimeout(()=>{
+    if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
+  }, 1200);
+}
+let conversationsPollInterval = null;
+function startConversationsPolling(){
+  if(conversationsPollInterval) clearInterval(conversationsPollInterval);
+  conversationsPollInterval = setInterval(()=>{
+    if(DB.currentUserId) refreshConversationsOnce();
+  }, 20000);
+}
 function refreshConversationsOnce(){
   const myId = DB.currentUserId;
   if(!myId) return;
@@ -2846,6 +2863,7 @@ function subscribeConversationMessages(convId){
         const last = msgs[msgs.length-1];
         const conv = DB.conversations.find(c=>c.id===convId);
         if(last.text!==undefined && (!conv || conv.lastMessage !== last.text)){
+          if(conv){ conv.lastMessage = last.text; conv.lastMessageAtMillis = Date.now(); }
           fbDb.collection('conversations').doc(convId).update({
             lastMessage: last.text,
             lastMessageAt: last.createdAt || firebase.firestore.FieldValue.serverTimestamp()
