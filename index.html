@@ -1114,6 +1114,12 @@ footer ul a:hover{color:#fff;}
             <input type="checkbox" id="adminToggle" onchange="toggleAdminMode(this.checked)"> View as Admin
           </label>
         </div>
+        <div class="card" style="padding:18px;margin-bottom:14px;">
+          <h3 style="margin-top:0;font-size:15px;">Diagnostics (temporary)</h3>
+          <p style="font-size:12.5px;color:var(--ink-soft);margin-top:0;">Live log of message/notification activity — for tracking down a bug. Safe to ignore otherwise.</p>
+          <button class="btn btn-outline btn-sm" onclick="copyDebugLog()" style="margin-bottom:8px;">Copy Log</button>
+          <pre id="debugLogPanel" style="white-space:pre-wrap;font-size:11px;line-height:1.5;background:#00000055;border-radius:10px;padding:10px;max-height:220px;overflow-y:auto;color:var(--ink-soft);"></pre>
+        </div>
         <button class="btn btn-danger btn-block" onclick="doLogout()">Logout</button>
       </div>
 
@@ -1615,6 +1621,8 @@ function renderView(view){
     renderNotifPrefs();
     document.getElementById('inviteChip').textContent = u.ulid;
     document.getElementById('inviteWhatsapp').href = `https://wa.me/?text=${encodeURIComponent("Join me on UniLink — University of Ilesa's student platform! Use my UniLink ID "+u.ulid+" to find me once you sign up.")}`;
+    const dbgPanel = document.getElementById('debugLogPanel');
+    if(dbgPanel) dbgPanel.textContent = (DB.debugLog||[]).join('\n') || '(no activity logged yet)';
   }
   if(view==='admin'){ Promise.all([loadAllUsersFromFirestore(), loadAllApplications(), loadAllReports()]).then(renderAdmin); renderAdmin(); }
 }
@@ -2613,6 +2621,23 @@ let conversationsEverSynced = false;
 // .get() can quietly hang on the same broken connection instead of
 // actually reaching the server. Fully dropping and re-establishing the
 // connection first guarantees the following fetch is genuinely fresh.
+// Temporary diagnostic logging, visible right in Settings on the phone —
+// no computer/DevTools needed. Timestamps each key event so we can see
+// exactly what happens (or doesn't) when a message comes in.
+function debugLog(msg){
+  DB.debugLog = (DB.debugLog||[]).slice(-40);
+  DB.debugLog.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
+  const panel = document.getElementById('debugLogPanel');
+  if(panel){ panel.textContent = DB.debugLog.join('\n'); panel.scrollTop = panel.scrollHeight; }
+}
+function copyDebugLog(){
+  const text = (DB.debugLog||[]).join('\n') || '(empty)';
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>toast('Log copied')).catch(()=>toast('Could not copy — screenshot it instead'));
+  } else {
+    toast('Could not copy — screenshot it instead');
+  }
+}
 function forceFirestoreReconnect(){
   return fbDb.disableNetwork().then(()=>fbDb.enableNetwork()).catch(err=>console.error('reconnect error', err));
 }
@@ -2678,7 +2703,9 @@ function refreshConversationsOnce(){
       if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
       if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
       updateMessagesBadge();
-    }).catch(err=>console.error('conversations refresh error', err));
+      const totalUnread = DB.conversations.reduce((s,c)=>s+(c.unreadCount||0),0);
+      debugLog(`manual/poll sync: ${snap.docs.length} convs, totalUnread=${totalUnread}`);
+    }).catch(err=>{ console.error('conversations refresh error', err); debugLog('REFRESH ERROR: '+err.message); });
 }
 // Whenever the tab/app comes back to the foreground (switching back from
 // another app, unlocking the phone, or returning to this tab after the
@@ -2731,7 +2758,9 @@ function subscribeMyConversations(){
       if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
       if(document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
       updateMessagesBadge();
-    }, err=>console.error('conversations snapshot error', err));
+      const totalUnread = DB.conversations.reduce((s,c)=>s+(c.unreadCount||0),0);
+      debugLog(`LIVE listener fired: ${snap.docs.length} convs, totalUnread=${totalUnread}, fromCache=${snap.metadata.fromCache}`);
+    }, err=>{ console.error('conversations snapshot error', err); debugLog('LISTENER ERROR: '+err.message); });
 }
 function updateMessagesBadge(){
   const total = DB.conversations.filter(c=>!hiddenConvIds.has(c.id)).reduce((s,c)=>s+(c.unreadCount||0),0);
@@ -2934,6 +2963,7 @@ function sendMessage(){
   const myId = me().id;
   const otherId = conv.otherId;
   input.value='';
+  debugLog(`sendMessage: convId=${convId}, myId=${myId}, otherId=${otherId}`);
   // Update our own view instantly — don't wait on the round-trip before
   // the Messages list / chat feel like they've registered the send.
   conv.lastMessage = text;
@@ -2983,7 +3013,8 @@ function sendMessage(){
     }
     if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
     if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
-  }).catch(err=>{ console.error('sendMessage error', err); toast(err.message); });
+    debugLog(`sendMessage OK: streak=${result&&result.streak}`);
+  }).catch(err=>{ console.error('sendMessage error', err); debugLog('SEND ERROR: '+err.message); toast(err.message); });
 }
 
 /* ================= WORLD CHAT (real Firestore backend, live for everyone) ================= */
