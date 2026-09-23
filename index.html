@@ -2607,19 +2607,29 @@ function localDateStr(date){
 // the "initial" sync (no toasts for messages you already had unread),
 // and every sync after that fires notifications normally.
 let conversationsEverSynced = false;
+// A plain .get() re-uses Firestore's existing connection to the server —
+// if THAT connection itself has gone stale/stuck (common on mobile after
+// the tab sits in the background a while, or on a flaky network), a
+// .get() can quietly hang on the same broken connection instead of
+// actually reaching the server. Fully dropping and re-establishing the
+// connection first guarantees the following fetch is genuinely fresh.
+function forceFirestoreReconnect(){
+  return fbDb.disableNetwork().then(()=>fbDb.enableNetwork()).catch(err=>console.error('reconnect error', err));
+}
 function manualRefreshMessages(){
   const btn = document.getElementById('msgRefreshBtn');
   if(btn){ btn.textContent = '🔄 Refreshing…'; btn.disabled = true; }
-  refreshConversationsOnce();
-  setTimeout(()=>{
-    if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
-  }, 1200);
+  forceFirestoreReconnect().then(refreshConversationsOnce).finally(()=>{
+    setTimeout(()=>{
+      if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
+    }, 300);
+  });
 }
 let conversationsPollInterval = null;
 function startConversationsPolling(){
   if(conversationsPollInterval) clearInterval(conversationsPollInterval);
   conversationsPollInterval = setInterval(()=>{
-    if(DB.currentUserId) refreshConversationsOnce();
+    if(DB.currentUserId) forceFirestoreReconnect().then(refreshConversationsOnce);
   }, 20000);
 }
 function refreshConversationsOnce(){
@@ -2672,13 +2682,13 @@ function refreshConversationsOnce(){
 }
 // Whenever the tab/app comes back to the foreground (switching back from
 // another app, unlocking the phone, or returning to this tab after the
-// browser suspended it in the background), force an immediate refresh.
-// This is exactly the moment a live Firestore listener can be slow to
-// reconnect, which is what was causing new messages from people you
-// hadn't searched for yet to seem invisible until you searched them up.
+// browser suspended it in the background), force a full reconnect + fresh
+// fetch. This is exactly the moment Firestore's live connection is most
+// likely to have gone stale, which is what was causing new messages to
+// seem invisible until you manually searched/opened the chat.
 document.addEventListener('visibilitychange', function(){
   if(document.visibilityState==='visible' && DB.currentUserId){
-    refreshConversationsOnce();
+    forceFirestoreReconnect().then(refreshConversationsOnce);
   }
 });
 function subscribeMyConversations(){
