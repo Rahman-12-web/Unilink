@@ -545,6 +545,9 @@ footer ul a:hover{color:#fff;}
 /* modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(3,5,15,.72);z-index:70;display:flex;align-items:flex-end;justify-content:center;}
 @media(min-width:640px){.modal-overlay{align-items:center;}}
+.img-viewer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:80;display:flex;align-items:center;justify-content:center;}
+.img-viewer-overlay img{max-width:96vw;max-height:92vh;object-fit:contain;border-radius:4px;-webkit-touch-callout:default;}
+.img-viewer-close{position:absolute;top:calc(env(safe-area-inset-top,0px) + 14px);right:16px;width:38px;height:38px;border-radius:50%;border:none;background:rgba(255,255,255,.12);color:#fff;font-size:16px;display:flex;align-items:center;justify-content:center;z-index:2;}
 .modal-overlay.hidden{display:none;}
 .modal-panel{background:var(--card);border:1px solid var(--line);width:100%;max-width:480px;max-height:88dvh;overflow-y:auto;border-radius:20px 20px 0 0;padding:22px 20px 26px;}
 @media(min-width:640px){.modal-panel{border-radius:18px;}}
@@ -1080,7 +1083,6 @@ footer ul a:hover{color:#fff;}
       <!-- SETTINGS -->
       <div class="view" id="view-settings">
         <div class="page-head"><div><h1>Settings</h1></div></div>
-        <div style="background:#22C55E22;border:1px solid #22C55E;border-radius:10px;padding:8px 12px;margin-bottom:14px;font-size:12.5px;font-weight:700;color:#22C55E;text-align:center;">BUILD: 2026-09-23-diag1 — if you see this, the new file is live</div>
         <div class="card" style="padding:18px;margin-bottom:14px;">
           <h3 style="margin-top:0;font-size:15px;">Account</h3>
           <div class="field"><label>Full name</label><input type="text" id="setName"></div>
@@ -1107,19 +1109,6 @@ footer ul a:hover{color:#fff;}
             <button class="btn btn-outline btn-sm" onclick="copyInviteLink()">Copy Invite Link</button>
             <a class="btn btn-primary btn-sm" id="inviteWhatsapp" href="#" target="_blank" rel="noopener">Share on WhatsApp</a>
           </div>
-        </div>
-        <div class="card" style="padding:18px;margin-bottom:14px;">
-          <h3 style="margin-top:0;font-size:15px;">Demo controls</h3>
-          <p style="font-size:13px;color:var(--ink-soft);margin-top:0;">This prototype runs entirely in your browser. Use this to preview the admin dashboard.</p>
-          <label style="display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;">
-            <input type="checkbox" id="adminToggle" onchange="toggleAdminMode(this.checked)"> View as Admin
-          </label>
-        </div>
-        <div class="card" style="padding:18px;margin-bottom:14px;">
-          <h3 style="margin-top:0;font-size:15px;">Diagnostics (temporary)</h3>
-          <p style="font-size:12.5px;color:var(--ink-soft);margin-top:0;">Live log of message/notification activity — for tracking down a bug. Safe to ignore otherwise.</p>
-          <button class="btn btn-outline btn-sm" onclick="copyDebugLog()" style="margin-bottom:8px;">Copy Log</button>
-          <pre id="debugLogPanel" style="white-space:pre-wrap;font-size:11px;line-height:1.5;background:#00000055;border-radius:10px;padding:10px;max-height:220px;overflow-y:auto;color:var(--ink-soft);"></pre>
         </div>
         <button class="btn btn-danger btn-block" onclick="doLogout()">Logout</button>
       </div>
@@ -1148,6 +1137,14 @@ footer ul a:hover{color:#fff;}
 <!-- Generic modal -->
 <div class="modal-overlay hidden" id="modalOverlay">
   <div class="modal-panel" id="modalPanel"></div>
+</div>
+
+<!-- Full-screen photo viewer: tap a News photo to open, tap anywhere (or ✕) to close.
+     Long-press the photo itself to save/download it — it's a real <img> with the
+     full-resolution image data, so the browser's native save menu just works. -->
+<div class="img-viewer-overlay hidden" id="imgViewerOverlay" onclick="if(event.target.id==='imgViewerOverlay') closeImageViewer()">
+  <button class="img-viewer-close" onclick="closeImageViewer()">✕</button>
+  <img id="imgViewerPic" src="" alt="Photo">
 </div>
 
 <script>
@@ -1222,7 +1219,6 @@ const DB = {
   savedNews:[],
   savedEvents:[],
   savedProducts:[],
-  adminMode:false,
   activeConvId:null,
   viewingProfileId:null,
   messagesByConv:{},
@@ -1469,6 +1465,7 @@ function loadProfileAndEnter(uid){
         subscribeMyApplications();
         subscribeMyConversations();
         subscribePolls();
+        subscribeEvents();
         updateLoginStreak(uid);
       } else {
         renderShell();
@@ -1558,7 +1555,7 @@ function renderShell(){
     </div>
     ${SIDEBAR_ITEMS.filter(it=>!it.requires || u[it.requires]).map(it=>`<button class="side-link" data-view="${it.view}" onclick="${it.view==='profile'?'showOwnProfile()':`showView('${it.view}')`}"><span class="ic">${it.icon}</span>${it.label}</button>`).join('')}
     <div class="side-divider"></div>
-    ${u.role==='admin'||DB.adminMode? `<button class="side-link" data-view="admin" onclick="showView('admin')"><span class="ic">🛠️</span>Admin Dashboard</button>`:''}
+    ${u.role==='admin'? `<button class="side-link" data-view="admin" onclick="showView('admin')"><span class="ic">🛠️</span>Admin Dashboard</button>`:''}
     <button class="side-link" onclick="doLogout()"><span class="ic">🚪</span>Logout</button>
   `;
   document.getElementById('sidebar').innerHTML = sidebarHtml;
@@ -1577,11 +1574,13 @@ function renderShell(){
   document.getElementById('bottomNav').innerHTML = bn.map(it=>`<button class="bn-item" data-view="${it.view}" onclick="${it.view==='profile'?'showOwnProfile()':`showView('${it.view}')`}"><span class="ic">${it.icon}</span>${it.label}</button>`).join('');
   updateNotifBadge();
   updateMessagesBadge();
+  updateNewsBadge();
 }
 
 function toggleSidebarMobile(open){ document.getElementById('sidebarMobile').classList.toggle('open',open); }
 
 function showView(view){
+  if(view==='admin' && (!me() || me().role!=='admin')){ toast("You don't have access to that."); return; }
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   const target = document.getElementById('view-'+view);
   if(target) target.classList.add('active');
@@ -1598,7 +1597,7 @@ function renderView(view){
   const u = me();
   if(view==='homeapp') renderHome();
   if(view==='leaderboard') renderLeaderboard();
-  if(view==='news') renderNews();
+  if(view==='news'){ renderNews(); markNewsSeen(); }
   if(view==='creators') renderCreators();
   if(view==='creatorstudio') renderCreatorStudio();
   if(view==='explorehub') renderExploreHub();
@@ -1622,8 +1621,6 @@ function renderView(view){
     renderNotifPrefs();
     document.getElementById('inviteChip').textContent = u.ulid;
     document.getElementById('inviteWhatsapp').href = `https://wa.me/?text=${encodeURIComponent("Join me on UniLink — University of Ilesa's student platform! Use my UniLink ID "+u.ulid+" to find me once you sign up.")}`;
-    const dbgPanel = document.getElementById('debugLogPanel');
-    if(dbgPanel) dbgPanel.textContent = (DB.debugLog||[]).join('\n') || '(no activity logged yet)';
   }
   if(view==='admin'){ Promise.all([loadAllUsersFromFirestore(), loadAllApplications(), loadAllReports()]).then(renderAdmin); renderAdmin(); }
 }
@@ -1641,6 +1638,23 @@ function openModal(html){
   document.getElementById('modalOverlay').classList.remove('hidden');
 }
 function closeModal(){ document.getElementById('modalOverlay').classList.add('hidden'); }
+/* Full-screen photo viewer for News post images — tap a photo to view it
+   properly (not cropped to the small feed thumbnail), tap the backdrop or
+   ✕ to close. Long-pressing the photo itself brings up the browser's
+   normal "Save image" menu since it's a plain <img> with the real image
+   data as its src. */
+function openImageViewer(src){
+  document.getElementById('imgViewerPic').src = src;
+  document.getElementById('imgViewerOverlay').classList.remove('hidden');
+}
+function openImageViewerForPost(postId){
+  const p = DB.posts.find(x=>x.id===postId);
+  if(p && p.imageData) openImageViewer(p.imageData);
+}
+function closeImageViewer(){
+  document.getElementById('imgViewerOverlay').classList.add('hidden');
+  document.getElementById('imgViewerPic').src = '';
+}
 
 /* ================= HOME ================= */
 function renderHome(){
@@ -1856,7 +1870,26 @@ function subscribePosts(){
       });
       if(document.getElementById('view-news')?.classList.contains('active')) renderNews();
       if(document.getElementById('view-homeapp')?.classList.contains('active')) renderHome();
+      updateNewsBadge();
     }, err=>{ console.error('posts snapshot error', err); toast('Could not load Campus News — check your connection.'); });
+}
+/* Notification tag on the News nav icon, same idea as the Messages
+   unread badge — shows how many posts have gone up since the student
+   last opened News. Tracked per-device via localStorage. */
+function updateNewsBadge(){
+  document.querySelectorAll('.bn-item[data-view="news"] .bn-badge').forEach(el=>el.remove());
+  if(!DB.posts.length) return;
+  const seenId = localStorage.getItem('ul_lastSeenNewsId');
+  let count = 0;
+  for(const p of DB.posts){ if(p.id===seenId) break; count++; }
+  if(count>0){
+    const btn = document.querySelector('.bn-item[data-view="news"]');
+    if(btn) btn.insertAdjacentHTML('afterbegin', `<span class="bn-badge">${count>9?'9+':count}</span>`);
+  }
+}
+function markNewsSeen(){
+  if(DB.posts.length) localStorage.setItem('ul_lastSeenNewsId', DB.posts[0].id);
+  updateNewsBadge();
 }
 function renderNewsChips(){
   document.getElementById('newsCategoryChips').innerHTML = NEWS_CATS.map(c=>`<button class="pill ${c===activeNewsCat?'active':''}" onclick="setNewsCat('${c}')">${c}</button>`).join('');
@@ -1889,7 +1922,7 @@ function postCard(p){
       </div>
     </div>
     <div class="ptext">${p.text}</div>
-    ${p.imageData?`<img src="${p.imageData}" class="pimg" style="width:100%;height:auto;max-height:280px;object-fit:cover;">`:''}
+    ${p.imageData?`<img src="${p.imageData}" class="pimg" style="width:100%;height:auto;max-height:280px;object-fit:cover;cursor:zoom-in;" onclick="openImageViewerForPost('${p.id}')">`:''}
     <div class="actions">
       <button class="aitem ${liked?'liked':''}" onclick="toggleLike('${p.id}')">${liked?'❤️':'♡'} ${total}</button>
       <button class="aitem" onclick="toggleComments('${p.id}')">💬 ${p.commentCount||0}</button>
@@ -2003,6 +2036,28 @@ function votePoll(pollId,idx){
     votedBy[uid] = idx;
     tx.update(ref, {options, votedBy});
   })).catch(err=>{ console.error(err); toast('Could not vote — try again.'); });
+}
+
+/* ---- Events ---- */
+let eventsUnsub = null;
+function subscribeEvents(){
+  if(eventsUnsub) eventsUnsub();
+  eventsUnsub = fbDb.collection('events').orderBy('createdAt','desc').limit(30)
+    .onSnapshot(snap=>{
+      DB.events = snap.docs.map(d=>{
+        const data = d.data();
+        const interestedBy = data.interestedBy || {};
+        return Object.assign({}, data, {
+          id:d.id,
+          interested: data.interested||0,
+          interestedBy,
+          interestedByMe: !!interestedBy[DB.currentUserId],
+          savedByMe: DB.savedEvents.includes(d.id),
+        });
+      });
+      if(document.getElementById('view-events')?.classList.contains('active')) renderEvents();
+      if(document.getElementById('view-admin')?.classList.contains('active')) renderAdmin();
+    }, err=>{ console.error('events snapshot error', err); toast('Could not load Events — check your connection.'); });
 }
 
 /* ================= CREATOR HUB ================= */
@@ -2149,14 +2204,17 @@ function submitRating(userId){
     }).catch(err=>toast(err.message));
 }
 function appStatusBanner(app,label){
-  const cls = app.status==='approved'?'ok':(app.status==='rejected'?'':'');
-  const bg = app.status==='rejected' ? 'background:rgba(239,68,68,.14);border-color:rgba(239,68,68,.4);color:#F87171;' : '';
-  const txt = app.status==='pending' ? `⏳ ${label}: Pending Admin Approval` : app.status==='approved' ? `✓ ${label} approved!` : `${label} was not approved.`;
+  const cls = app.status==='approved'?'ok':'';
+  const bg = (app.status==='rejected'||app.status==='revoked') ? 'background:rgba(239,68,68,.14);border-color:rgba(239,68,68,.4);color:#F87171;' : '';
+  const txt = app.status==='pending' ? `⏳ ${label}: Pending Admin Approval`
+    : app.status==='approved' ? `✓ ${label} approved!`
+    : app.status==='revoked' ? `${label} access was revoked by admin.`
+    : `${label} was not approved.`;
   return `<div class="verify-banner ${cls}" style="${bg}margin-bottom:16px;">${txt}</div>`;
 }
 function openCreatorApply(){
   const u = me();
-  const existing = DB.applications.find(a=>a.applicantId===u.id && a.type==='creator');
+  const existing = DB.applications.find(a=>a.applicantId===u.id && a.type==='creator' && a.status!=='revoked');
   if(existing){ toast('You already have an application: '+existing.status); return; }
   if(u.isCreator){ showView('creatorstudio'); return; }
   openModal(`
@@ -2304,7 +2362,7 @@ function reportItem(type,id){
 
 function openSellerApply(){
   const u = me();
-  const existing = DB.applications.find(a=>a.applicantId===u.id && a.type==='seller');
+  const existing = DB.applications.find(a=>a.applicantId===u.id && a.type==='seller' && a.status!=='revoked');
   if(existing){ toast('You already have an application: '+existing.status); return; }
   if(u.isSeller){ showView('sellercenter'); return; }
   openModal(`
@@ -2547,7 +2605,7 @@ function inviteMember(gid){
 function renderEvents(){
   document.getElementById('eventsGrid').innerHTML = DB.events.map(e=>`
     <div class="card" style="overflow:hidden;">
-      <div class="event-img"><div class="event-date-chip">${e.date}</div></div>
+      <div class="event-img" ${e.imageData?`style="background-image:url('${e.imageData}');background-size:cover;background-position:center;"`:''}><div class="event-date-chip">${e.date}</div></div>
       <div class="event-body">
         <h4>${e.name}</h4>
         <div class="meta">🕐 ${e.time}</div>
@@ -2561,11 +2619,20 @@ function renderEvents(){
       </div>
     </div>`).join('') || emptyState('🎟️','No events published yet','Check back soon, or submit one below for admin to review.');
 }
+/* Interested state now lives on the event doc in Firestore (like post
+   reactions), so it survives leaving the app or refreshing — it used to
+   only live in local memory, which was the actual bug. */
 function toggleInterested(id){
-  const e = DB.events.find(x=>x.id===id);
-  e.interestedByMe=!e.interestedByMe;
-  e.interested += e.interestedByMe?1:-1;
-  renderEvents();
+  const uid = DB.currentUserId;
+  const ref = fbDb.collection('events').doc(id);
+  fbDb.runTransaction(tx=>tx.get(ref).then(snap=>{
+    const data = snap.data();
+    const interestedBy = Object.assign({}, data.interestedBy||{});
+    let interested = data.interested||0;
+    if(interestedBy[uid]){ delete interestedBy[uid]; interested = Math.max(0,interested-1); }
+    else { interestedBy[uid] = true; interested += 1; }
+    tx.update(ref, {interested, interestedBy});
+  })).catch(err=>{ console.error(err); toast('Could not update — try again.'); });
 }
 function toggleSaveEvent(id){
   if(DB.savedEvents.includes(id)){ DB.savedEvents=DB.savedEvents.filter(x=>x!==id); toast('Removed from Saved'); }
@@ -2625,20 +2692,10 @@ let conversationsEverSynced = false;
 // Temporary diagnostic logging, visible right in Settings on the phone —
 // no computer/DevTools needed. Timestamps each key event so we can see
 // exactly what happens (or doesn't) when a message comes in.
-function debugLog(msg){
-  DB.debugLog = (DB.debugLog||[]).slice(-40);
-  DB.debugLog.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
-  const panel = document.getElementById('debugLogPanel');
-  if(panel){ panel.textContent = DB.debugLog.join('\n'); panel.scrollTop = panel.scrollHeight; }
-}
-function copyDebugLog(){
-  const text = (DB.debugLog||[]).join('\n') || '(empty)';
-  if(navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(()=>toast('Log copied')).catch(()=>toast('Could not copy — screenshot it instead'));
-  } else {
-    toast('Could not copy — screenshot it instead');
-  }
-}
+// Diagnostics UI has been removed from Settings (the bug it was added to
+// track down is fixed) — kept as a no-op so the scattered debugLog(...)
+// call sites elsewhere don't need to be touched.
+function debugLog(msg){ /* diagnostics removed */ }
 function manualRefreshMessages(){
   const btn = document.getElementById('msgRefreshBtn');
   if(btn){ btn.textContent = '🔄 Refreshing…'; btn.disabled = true; }
@@ -2901,7 +2958,7 @@ function subscribeConversationMessages(convId){
       const msgs = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
       DB.activeConvMessages = msgs;
       DB.messagesByConv[convId] = msgs;
-      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active') && !isTypingInChat()) renderConversation();
+      if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversationMessages();
       // Self-heal: whoever opens this chat re-syncs the parent conversation's
       // "last message" preview to match the real messages here. This covers
       // the case where the last sender's own preview-update write didn't
@@ -2957,7 +3014,7 @@ function renderConversation(){
       <div class="chat-header">
         <button class="icon-btn" onclick="showView('messages')">←</button>
         <div class="avatar-circle">${initials(conv.otherName)}</div>
-        <div style="flex:1;"><strong style="font-size:14.5px;">${conv.otherName}</strong>${streak>0?`<div style="font-size:11.5px;color:#FBBF24;">🔥 ${streak}-day streak</div>`:''}</div>
+        <div style="flex:1;"><strong style="font-size:14.5px;">${conv.otherName}</strong><div id="convStreakBadge" style="font-size:11.5px;color:#FBBF24;">${streak>0?`🔥 ${streak}-day streak`:''}</div></div>
         <button class="icon-btn" onclick="openChatMenu('${conv.id}')">⋮</button>
       </div>
       ${banner}
@@ -2966,6 +3023,27 @@ function renderConversation(){
     </div>
   `;
   setTimeout(()=>{ const el=document.getElementById('chatMsgs'); if(el) el.scrollTop=el.scrollHeight; },0);
+}
+/* Rebuilding the ENTIRE conversation screen (header + input box included)
+   on every single sent/received message was destroying and recreating the
+   text input each time — on mobile that blurs it and dismisses/reopens the
+   keyboard, which is the "screen shake" reported. These two functions only
+   touch the message-bubble list (and the streak number in the header),
+   leaving the input element alone so it never loses focus mid-message. */
+function renderConversationMessages(){
+  const el = document.getElementById('chatMsgs');
+  if(!el) return; // shell not drawn yet — the full renderConversation() above will draw it
+  const myId = me().id;
+  el.innerHTML = (DB.activeConvMessages||[]).map(m=>`<div class="bubble ${m.from===myId?'me':'them'}">${m.text}</div>`).join('') || emptyState('👋','Say hello!','Messages here disappear automatically after 1 week.');
+  el.scrollTop = el.scrollHeight;
+  renderConversationHeaderStreak();
+}
+function renderConversationHeaderStreak(){
+  const conv = DB.conversations.find(c=>c.id===DB.activeConvId);
+  const el = document.getElementById('convStreakBadge');
+  if(!conv || !el) return;
+  const streak = effectiveStreak(conv);
+  el.innerHTML = streak>0 ? `🔥 ${streak}-day streak` : '';
 }
 function sendMessage(){
   const convId = DB.activeConvId;
@@ -2985,7 +3063,7 @@ function sendMessage(){
   conv.lastMessageAtMillis = Date.now();
   DB.activeConvMessages = (DB.activeConvMessages||[]).concat([{from:myId, text, _pending:true}]);
   DB.messagesByConv[convId] = DB.activeConvMessages;
-  renderConversation();
+  renderConversationMessages();
 
   const today = localDateStr();
   const yesterday = localDateStr(new Date(Date.now()-86400000));
@@ -3026,7 +3104,7 @@ function sendMessage(){
       localConv.lastStreakDate = result.lastStreakDate;
       localConv.activeToday = result.activeToday;
     }
-    if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversation();
+    if(DB.activeConvId===convId && document.getElementById('view-conversation')?.classList.contains('active')) renderConversationMessages();
     if(document.getElementById('view-messages')?.classList.contains('active')) renderMessages();
     debugLog(`sendMessage OK: streak=${result&&result.streak}`);
   }).catch(err=>{ console.error('sendMessage error', err); debugLog('SEND ERROR: '+err.message); toast(err.message); });
@@ -3185,11 +3263,6 @@ function saveSettings(){
     });
   }
 }
-function toggleAdminMode(checked){
-  DB.adminMode = checked;
-  renderShell();
-  toast(checked?'Viewing as Admin':'Exited admin view');
-}
 
 /* ================= GLOBAL SEARCH ================= */
 let searchDebounceTimer = null;
@@ -3259,6 +3332,26 @@ function runGlobalSearch(q){
 
 /* ================= ADMIN DASHBOARD ================= */
 let activeAdminTab='overview';
+/* ---- Dynamic (unlimited) poll option builder for the admin Polls tab ---- */
+let adminPollQValue = '';
+let adminPollOptionValues = ['',''];
+function escAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function renderAdminPollOptionInputs(){
+  return adminPollOptionValues.map((v,i)=>`
+    <div class="field-row" style="align-items:center;gap:8px;">
+      <input type="text" style="flex:1;" placeholder="Option ${i+1}${i<2?'':' (optional)'}" value="${escAttr(v)}" oninput="adminPollOptionValues[${i}]=this.value">
+      ${adminPollOptionValues.length>2?`<button type="button" class="btn btn-outline btn-sm" onclick="removeAdminPollOption(${i})">✕</button>`:''}
+    </div>`).join('');
+}
+function addAdminPollOption(){
+  adminPollOptionValues.push('');
+  document.getElementById('adminPollOptionsWrap').innerHTML = renderAdminPollOptionInputs();
+}
+function removeAdminPollOption(i){
+  if(adminPollOptionValues.length<=2) return;
+  adminPollOptionValues.splice(i,1);
+  document.getElementById('adminPollOptionsWrap').innerHTML = renderAdminPollOptionInputs();
+}
 function loadAllUsersFromFirestore(){
   return fbDb.collection('users').get().then(snap=>{
     snap.docs.forEach(d=>{
@@ -3332,11 +3425,9 @@ function renderAdminTabContent(){
   } else if(activeAdminTab==='polls'){
     el.innerHTML = `<div class="card" style="padding:16px;margin-bottom:14px;">
       <h3 style="margin-top:0;font-size:15px;">Create Poll</h3>
-      <div class="field"><input type="text" id="adminPollQ" placeholder="Poll question"></div>
-      <div class="field"><input type="text" id="adminPollO1" placeholder="Option 1"></div>
-      <div class="field"><input type="text" id="adminPollO2" placeholder="Option 2"></div>
-      <div class="field"><input type="text" id="adminPollO3" placeholder="Option 3 (optional)"></div>
-      <div class="field"><input type="text" id="adminPollO4" placeholder="Option 4 (optional)"></div>
+      <div class="field"><input type="text" id="adminPollQ" placeholder="Poll question" value="${escAttr(adminPollQValue)}" oninput="adminPollQValue=this.value"></div>
+      <div id="adminPollOptionsWrap">${renderAdminPollOptionInputs()}</div>
+      <button type="button" class="btn btn-outline btn-sm" onclick="addAdminPollOption()" style="margin-bottom:10px;">+ Add option</button>
       <button class="btn btn-primary btn-sm" onclick="adminCreatePoll()">Publish Poll</button>
     </div>
     ${DB.polls.map(p=>`<div class="admin-table-row card"><div class="main"><strong>${p.question}</strong><span>${p.options.reduce((s,o)=>s+o.votes,0)} votes</span></div>
@@ -3366,19 +3457,27 @@ function renderAdminTabContent(){
       <div class="field"><input type="text" id="adminEvName" placeholder="Event name"></div>
       <div class="field-row"><input type="text" id="adminEvDate" placeholder="Date e.g. Sep 5"><input type="text" id="adminEvTime" placeholder="Time e.g. 5:00 PM"></div>
       <div class="field"><input type="text" id="adminEvLoc" placeholder="Location"></div>
-      <button class="btn btn-primary btn-sm" onclick="adminPublishEvent()">Publish Event</button>
-    </div>`;
+      <div class="field"><label>Photo — flyer, ticket, poster (optional)</label><input type="file" id="adminEvImage" accept="image/*" onchange="previewAdminEvImage()"><small class="hint">Auto-compressed — no cloud storage needed.</small></div>
+      <div id="adminEvImagePreview"></div>
+      <button class="btn btn-primary btn-sm" id="adminEvPublishBtn" onclick="adminPublishEvent()">Publish Event</button>
+    </div>
+    ${DB.events.map(e=>`<div class="admin-table-row card"><div class="main"><strong>${e.name}</strong><span>${e.date} · ${e.interested||0} interested</span></div>
+      <button class="btn btn-danger btn-sm" onclick="adminDeleteEvent('${e.id}')">Delete</button></div>`).join('')}`;
   }
 }
 function adminCreatePoll(){
   const q = document.getElementById('adminPollQ').value.trim();
-  const opts = [document.getElementById('adminPollO1').value,document.getElementById('adminPollO2').value,document.getElementById('adminPollO3').value,document.getElementById('adminPollO4').value]
-    .map(v=>v.trim()).filter(Boolean);
+  const opts = adminPollOptionValues.map(v=>v.trim()).filter(Boolean);
   if(!q || opts.length<2){ toast('Add a question and at least 2 options'); return; }
   fbDb.collection('polls').add({
     authorName:'UniLink Admin', question:q, options:opts.map(text=>({text,votes:0})), votedBy:{},
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
-  }).then(()=>{ toast('Poll published'); renderAdmin(); }).catch(err=>toast(err.message));
+  }).then(()=>{
+    toast('Poll published');
+    adminPollQValue = '';
+    adminPollOptionValues = ['',''];
+    renderAdmin();
+  }).catch(err=>toast(err.message));
 }
 function adminDeletePoll(id){
   fbDb.collection('polls').doc(id).delete().then(()=>toast('Poll removed')).catch(err=>toast(err.message));
@@ -3412,6 +3511,7 @@ function adminAppList(type){
     return `<div class="card"><div class="admin-table-row"><div class="main"><strong>${applicant.name}</strong><span>${detail}</span></div>
     <span class="badge ${a.status==='pending'?'badge-pending':a.status==='approved'?'badge-verified':'badge-rejected'}">${a.status}</span>
     ${a.status==='pending'?`<button class="btn btn-primary btn-sm" onclick="adminDecide('${a.id}',true)">Approve</button><button class="btn btn-danger btn-sm" onclick="adminDecide('${a.id}',false)">Reject</button>`:''}
+    ${a.status==='approved'?`<button class="btn btn-danger btn-sm" onclick="adminRevoke('${a.id}')">Revoke</button>`:''}
     </div></div>`;
   }).join('');
 }
@@ -3449,6 +3549,34 @@ function adminDecide(appId,approve){
     if(approve && applicant){
       DB.studyGroups.push({id:'g'+Date.now(),name:a.data.name,course:a.data.course,department:a.data.department,level:a.data.level,desc:a.data.desc,members:[applicant.id],adminId:applicant.id,status:'approved',materials:[],announcements:[],chat:[]});
     }
+    finish();
+  } else {
+    finish();
+  }
+}
+/* Lets admin undo a previous approval (creator/seller status, or a study
+   group) — before this there was no way back once something was approved. */
+function adminRevoke(appId){
+  const a = DB.applications.find(x=>x.id===appId);
+  if(!a) return;
+  const applicant = DB.users.find(u=>u.id===a.applicantId);
+  const finish = ()=>{
+    a.status = 'revoked';
+    toast('Access revoked');
+    renderShell();
+    renderAdmin();
+  };
+  if(a.type==='creator' || a.type==='seller'){
+    const field = a.type==='creator' ? 'isCreator' : 'isSeller';
+    const writeApp = fbDb.collection('applications').doc(appId).update({status:'revoked'});
+    const writeUser = fbDb.collection('users').doc(a.applicantId).update({[field]:false});
+    Promise.all([writeApp, writeUser]).then(()=>{
+      if(applicant) applicant[field] = false;
+      finish();
+    }).catch(err=>toast(err.message));
+  } else if(a.type==='group'){
+    const grp = DB.studyGroups.find(g=>g.adminId===a.applicantId && g.name===a.data.name);
+    if(grp) grp.status = 'revoked';
     finish();
   } else {
     finish();
@@ -3536,12 +3664,56 @@ function resolveReport(id){
     .then(()=>{ const r=DB.reports.find(x=>x.id===id); if(r) r.status='resolved'; renderAdmin(); })
     .catch(err=>toast(err.message));
 }
+function previewAdminEvImage(){
+  const file = document.getElementById('adminEvImage').files[0];
+  const el = document.getElementById('adminEvImagePreview');
+  if(!file){ el.innerHTML=''; return; }
+  el.innerHTML = `<div class="helper-note">Compressing preview…</div>`;
+  compressImageToDataURL(file).then(dataUrl=>{
+    el.innerHTML = `<img src="${dataUrl}" style="width:100%;max-height:180px;object-fit:cover;border-radius:10px;margin:6px 0;">`;
+  }).catch(()=>{ el.innerHTML = `<div class="helper-note">Could not preview that image.</div>`; });
+}
+/* Events used to live only in the in-memory DB.events array (never written
+   to Firestore), which is why a published event — and whether you'd
+   marked yourself interested — disappeared the moment you left the app
+   or refreshed. Now saved/loaded the same way News and Polls are. */
 function adminPublishEvent(){
   const name = document.getElementById('adminEvName').value.trim();
   if(!name) return;
-  DB.events.unshift({id:'e'+Date.now(),name,date:document.getElementById('adminEvDate').value||'TBA',time:document.getElementById('adminEvTime').value||'TBA',location:document.getElementById('adminEvLoc').value||'TBA',organizer:'UniLink Admin',desc:'Official UniLink event.',interested:0,interestedByMe:false,savedByMe:false});
-  toast('Event published');
-  renderAdmin();
+  const file = document.getElementById('adminEvImage').files[0] || null;
+  setBtnLoading('adminEvPublishBtn', true, 'Publish Event');
+  const publish = (imageData)=>{
+    fbDb.collection('events').add({
+      name,
+      date: document.getElementById('adminEvDate').value || 'TBA',
+      time: document.getElementById('adminEvTime').value || 'TBA',
+      location: document.getElementById('adminEvLoc').value || 'TBA',
+      organizer:'UniLink Admin', desc:'Official UniLink event.',
+      imageData: imageData||null,
+      interested:0, interestedBy:{},
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    }).then(()=>{
+      toast('Event published');
+      document.getElementById('adminEvName').value='';
+      document.getElementById('adminEvDate').value='';
+      document.getElementById('adminEvTime').value='';
+      document.getElementById('adminEvLoc').value='';
+      document.getElementById('adminEvImage').value='';
+      document.getElementById('adminEvImagePreview').innerHTML='';
+      renderAdmin();
+    }).catch(err=>{ setBtnLoading('adminEvPublishBtn', false, 'Publish Event'); toast(err.message); });
+  };
+  if(file){
+    compressImageToDataURL(file).then(publish).catch(err=>{
+      setBtnLoading('adminEvPublishBtn', false, 'Publish Event');
+      toast(err.message);
+    });
+  } else {
+    publish(null);
+  }
+}
+function adminDeleteEvent(id){
+  fbDb.collection('events').doc(id).delete().then(()=>toast('Event removed')).catch(err=>toast(err.message));
 }
 
 /* ================= GROUP DETAIL hook ================= */
