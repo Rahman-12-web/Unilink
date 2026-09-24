@@ -369,6 +369,8 @@ footer ul a:hover{color:#fff;}
 @media(min-width:960px){.bottom-nav{display:none;}}
 .bn-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;border:none;background:none;color:var(--ink-soft);font-size:10.5px;font-weight:600;border-radius:10px;position:relative;}
 .bn-badge{position:absolute;top:2px;left:50%;transform:translateX(6px);background:var(--red);color:#fff;font-size:9.5px;font-weight:800;border-radius:999px;min-width:15px;height:15px;display:flex;align-items:center;justify-content:center;padding:0 3px;z-index:2;}
+.tile-badge{position:absolute;top:14px;right:14px;background:var(--red);color:#fff;font-size:10.5px;font-weight:800;border-radius:999px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;padding:0 5px;z-index:2;}
+.side-badge{margin-left:auto;background:var(--red);color:#fff;font-size:10.5px;font-weight:800;border-radius:999px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;padding:0 5px;}
 .bn-item .ic{font-size:19px;}
 .bn-item.active{color:var(--royal);}
 .bn-item.active::before{content:"";position:absolute;top:0;left:50%;transform:translateX(-50%);width:34px;height:34px;border-radius:50%;background:radial-gradient(circle,rgba(37,99,255,.28),transparent 72%);z-index:-1;}
@@ -1176,6 +1178,10 @@ fbDb.enablePersistence({synchronizeTabs:true}).catch(err=>console.warn('Firestor
 const ADMIN_EMAILS_FB = ['adediranjohn08@gmail.com','abdulrahmamayomide@gmail.com','amplicue@gmail.com','oyinkansolaariyo480@gmail.com'];
 let worldChatUnsub = null;
 let postsUnsub = null;
+// Same purpose as conversationsEverSynced for Messages: true once the very
+// first Campus News sync after login has happened, so already-existing
+// posts don't all re-notify the moment the app opens or you log back in.
+let postsEverSynced = false;
 let myProfileUnsub = null;
 let productsUnsub = null;
 let creatorsUnsub = null;
@@ -1414,10 +1420,12 @@ function doLogout(){
   if(conversationMessagesUnsub){ conversationMessagesUnsub(); conversationMessagesUnsub=null; }
   if(leaderboardUnsub){ leaderboardUnsub(); leaderboardUnsub=null; }
   if(pollsUnsub){ pollsUnsub(); pollsUnsub=null; }
+  if(eventsUnsub){ eventsUnsub(); eventsUnsub=null; }
   if(conversationsPollInterval){ clearInterval(conversationsPollInterval); conversationsPollInterval=null; }
   DB.currentUserId = null;
   DB.conversations = [];
   conversationsEverSynced = false;
+  postsEverSynced = false;
   document.getElementById('app').style.display='none';
   document.getElementById('landing').style.display='block';
   landingShowView('home');
@@ -1651,6 +1659,10 @@ function openImageViewerForPost(postId){
   const p = DB.posts.find(x=>x.id===postId);
   if(p && p.imageData) openImageViewer(p.imageData);
 }
+function openImageViewerForEvent(eventId){
+  const e = DB.events.find(x=>x.id===eventId);
+  if(e && e.imageData) openImageViewer(e.imageData);
+}
 function closeImageViewer(){
   document.getElementById('imgViewerOverlay').classList.add('hidden');
   document.getElementById('imgViewerPic').src = '';
@@ -1857,6 +1869,7 @@ function subscribePosts(){
   if(postsUnsub) postsUnsub();
   postsUnsub = fbDb.collection('posts').orderBy('createdAt','desc').limit(50)
     .onSnapshot(snap=>{
+      const previousTopId = DB.posts.length ? DB.posts[0].id : null;
       DB.posts = snap.docs.map(d=>{
         const data = d.data();
         return Object.assign({}, data, {
@@ -1868,6 +1881,35 @@ function subscribePosts(){
           time: timeAgo(data.createdAt),
         });
       });
+      // Same "you get told the moment it happens, no need to check News
+      // yourself first" treatment Messages gets for new messages: a bell
+      // notification + toast for posts that are genuinely new since the
+      // last sync. Skipped on the very first sync after login (so
+      // existing posts don't all re-notify every time the app opens),
+      // and skipped if the previous newest post can no longer be found at
+      // all (almost certainly deleted, not 50 new posts at once) so a
+      // deletion can't misfire as a flood of "new post" notifications.
+      if(postsEverSynced){
+        const newOnes = [];
+        let found = (previousTopId===null);
+        for(const p of DB.posts){
+          if(p.id===previousTopId){ found = true; break; }
+          newOnes.push(p);
+        }
+        if(found && newOnes.length){
+          const isViewingNews = document.getElementById('view-news')?.classList.contains('active');
+          newOnes.slice().reverse().forEach(p=>{
+            const preview = (p.text||'').slice(0,60) + ((p.text||'').length>60?'…':'');
+            DB.notifications.unshift({id:'n'+Date.now()+p.id, icon:'📰', text:`New post from ${p.authorName}: ${preview}`, time:'now', unread:true});
+          });
+          renderNotifications();
+          updateNotifBadge();
+          if(!isViewingNews){
+            toast(newOnes.length===1 ? `📰 New post from ${newOnes[0].authorName}` : `📰 ${newOnes.length} new posts in Campus News`);
+          }
+        }
+      }
+      postsEverSynced = true;
       if(document.getElementById('view-news')?.classList.contains('active')) renderNews();
       if(document.getElementById('view-homeapp')?.classList.contains('active')) renderHome();
       updateNewsBadge();
@@ -1877,14 +1919,19 @@ function subscribePosts(){
    unread badge — shows how many posts have gone up since the student
    last opened News. Tracked per-device via localStorage. */
 function updateNewsBadge(){
-  document.querySelectorAll('.bn-item[data-view="news"] .bn-badge').forEach(el=>el.remove());
+  document.querySelectorAll('.bn-item[data-view="news"] .bn-badge, .side-link[data-view="news"] .side-badge').forEach(el=>el.remove());
   if(!DB.posts.length) return;
   const seenId = localStorage.getItem('ul_lastSeenNewsId');
   let count = 0;
-  for(const p of DB.posts){ if(p.id===seenId) break; count++; }
+  let found = (seenId===null);
+  for(const p of DB.posts){ if(p.id===seenId){ found=true; break; } count++; }
+  if(!found) count = 0; // the last-seen post is gone (deleted) — don't treat the whole feed as new
   if(count>0){
+    const label = count>9?'9+':count;
     const btn = document.querySelector('.bn-item[data-view="news"]');
-    if(btn) btn.insertAdjacentHTML('afterbegin', `<span class="bn-badge">${count>9?'9+':count}</span>`);
+    if(btn) btn.insertAdjacentHTML('afterbegin', `<span class="bn-badge">${label}</span>`);
+    const side = document.querySelector('.side-link[data-view="news"]');
+    if(side) side.insertAdjacentHTML('beforeend', `<span class="side-badge">${label}</span>`);
   }
 }
 function markNewsSeen(){
@@ -2272,6 +2319,42 @@ function deleteCreatorPost(id){
 const MARKET_CATS = ['All','Fashion','Electronics','Furniture','Academics'];
 let activeMarketCat = 'All';
 /* ================= EXPLORE HUB (discovery for Marketplace/Creators/Groups/Events) ================= */
+/* Small "new since you last checked" badges on each Explore tile — same
+   idea as the News/Messages badges. Marketplace and Events are backed by
+   a real ordered Firestore query, so (like News) we can count how many
+   items sit above the last-seen id. Creator Hub and Study Groups aren't
+   ordered feeds, so those fall back to a simple "how many more than last
+   time" count. */
+function exploreSeenKey(view){ return 'ul_exploreSeen_'+view; }
+function exploreNewCount(view, list){
+  if(!list || !list.length) return 0;
+  const seen = localStorage.getItem(exploreSeenKey(view));
+  if(view==='market' || view==='events'){
+    let count = 0;
+    for(const item of list){ if(item.id===seen) break; count++; }
+    return count;
+  }
+  const prevCount = seen ? (parseInt(seen,10)||0) : 0;
+  return Math.max(0, list.length - prevCount);
+}
+function markExploreSeen(view, list){
+  if(view==='market' || view==='events'){
+    if(list && list.length) localStorage.setItem(exploreSeenKey(view), list[0].id);
+  } else {
+    localStorage.setItem(exploreSeenKey(view), String((list&&list.length)||0));
+  }
+}
+function exploreTileList(view){
+  if(view==='market') return DB.products;
+  if(view==='creators') return DB.users.filter(u=>u.isCreator);
+  if(view==='groups') return DB.studyGroups;
+  if(view==='events') return DB.events;
+  return [];
+}
+function openExploreTile(view){
+  markExploreSeen(view, exploreTileList(view));
+  showView(view);
+}
 function renderExploreHub(){
   const tiles = [
     {v:'market',ic:'🛍️',bg:'rgba(34,211,238,.16)',color:'var(--cyan)',t:'Marketplace',d:'Browse products & services from student sellers'},
@@ -2279,11 +2362,15 @@ function renderExploreHub(){
     {v:'groups',ic:'📚',bg:'rgba(124,58,237,.16)',color:'var(--violet)',t:'Study Groups',d:'Find and join approved academic study groups'},
     {v:'events',ic:'🎟️',bg:'rgba(217,70,239,.16)',color:'var(--pink)',t:'Events',d:'Official events published by UniLink admin'},
   ];
-  document.getElementById('exploreHubGrid').innerHTML = tiles.map(x=>`
-    <button class="card feature-card" style="text-align:left;border:1px solid var(--line);background:var(--card)" onclick="showView('${x.v}')">
+  document.getElementById('exploreHubGrid').innerHTML = tiles.map(x=>{
+    const n = exploreNewCount(x.v, exploreTileList(x.v));
+    return `
+    <button class="card feature-card" style="text-align:left;border:1px solid var(--line);background:var(--card);position:relative;" onclick="openExploreTile('${x.v}')">
+      ${n>0?`<span class="tile-badge">${n>9?'9+':n}</span>`:''}
       <div class="feature-ic" style="background:${x.bg};color:${x.color}">${x.ic}</div>
       <h3>${x.t}</h3><p>${x.d}</p>
-    </button>`).join('');
+    </button>`;
+  }).join('');
 }
 function renderMarket(){
   const u = me();
@@ -2605,7 +2692,10 @@ function inviteMember(gid){
 function renderEvents(){
   document.getElementById('eventsGrid').innerHTML = DB.events.map(e=>`
     <div class="card" style="overflow:hidden;">
-      <div class="event-img" ${e.imageData?`style="background-image:url('${e.imageData}');background-size:cover;background-position:center;"`:''}><div class="event-date-chip">${e.date}</div></div>
+      <div class="event-img">
+        ${e.imageData?`<img src="${e.imageData}" alt="${e.name}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;cursor:zoom-in;" onclick="openImageViewerForEvent('${e.id}')">`:''}
+        <div class="event-date-chip">${e.date}</div>
+      </div>
       <div class="event-body">
         <h4>${e.name}</h4>
         <div class="meta">🕐 ${e.time}</div>
@@ -2830,10 +2920,13 @@ function subscribeMyConversations(retryDelayMs){
 }
 function updateMessagesBadge(){
   const total = DB.conversations.filter(c=>!hiddenConvIds.has(c.id)).reduce((s,c)=>s+(c.unreadCount||0),0);
-  document.querySelectorAll('.bn-item[data-view="messages"] .bn-badge').forEach(el=>el.remove());
+  document.querySelectorAll('.bn-item[data-view="messages"] .bn-badge, .side-link[data-view="messages"] .side-badge').forEach(el=>el.remove());
   if(total>0){
+    const label = total>9?'9+':total;
     const btn = document.querySelector('.bn-item[data-view="messages"]');
-    if(btn) btn.insertAdjacentHTML('afterbegin', `<span class="bn-badge">${total>9?'9+':total}</span>`);
+    if(btn) btn.insertAdjacentHTML('afterbegin', `<span class="bn-badge">${label}</span>`);
+    const side = document.querySelector('.side-link[data-view="messages"]');
+    if(side) side.insertAdjacentHTML('beforeend', `<span class="side-badge">${label}</span>`);
   }
 }
 /* Chat streaks (conversation-level, separate from the daily login streak)
@@ -2926,7 +3019,10 @@ function openConversation(convId){
   subscribeConversationMessages(convId);
   showView('conversation');
   const myId = DB.currentUserId;
-  fbDb.collection('conversations').doc(convId).update({[`unread.${myId}`]: 0}).catch(()=>{});
+  fbDb.collection('conversations').doc(convId).update({[`unread.${myId}`]: 0}).catch(err=>{
+    console.error('unread reset failed, retrying once', err);
+    setTimeout(()=>{ fbDb.collection('conversations').doc(convId).update({[`unread.${myId}`]: 0}).catch(e=>console.error('unread reset retry failed', e)); }, 2000);
+  });
   const conv = DB.conversations.find(c=>c.id===convId);
   if(conv){ conv.unreadCount = 0; updateMessagesBadge(); }
   // Always pull a fresh, direct read of the conversation doc the moment a
