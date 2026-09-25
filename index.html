@@ -1982,8 +1982,18 @@ function postCard(p){
     </div>
   </div>`;
 }
+/* Liking used to wait for the full Firestore round trip (transaction +
+   live listener + re-render) before the heart even changed on screen —
+   that network wait is what felt slow. Now it flips instantly (optimistic
+   update), then confirms with the server in the background; if that
+   write ever fails, it quietly reverts and lets you know. */
 function toggleLike(id){
   const uid = DB.currentUserId;
+  const p = DB.posts.find(x=>x.id===id);
+  if(!p) return;
+  applyLikeToggle(p, uid);
+  refreshNewsSurfaces();
+
   const ref = fbDb.collection('posts').doc(id);
   fbDb.runTransaction(tx=>tx.get(ref).then(snap=>{
     const data = snap.data();
@@ -1998,7 +2008,29 @@ function toggleLike(id){
       reactedBy[uid] = 'heart';
     }
     tx.update(ref, {reactions, reactedBy});
-  })).catch(err=>{ console.error(err); toast('Could not like — try again.'); });
+  })).catch(err=>{
+    console.error(err);
+    const p2 = DB.posts.find(x=>x.id===id);
+    if(p2){ applyLikeToggle(p2, uid); refreshNewsSurfaces(); } // revert
+    toast('Could not like — try again.');
+  });
+}
+function applyLikeToggle(p, uid){
+  p.reactedBy = Object.assign({}, p.reactedBy||{});
+  p.reactions = Object.assign({heart:0,fire:0,laugh:0,clap:0}, p.reactions||{});
+  if(p.myReaction==='heart'){
+    p.reactions.heart = Math.max(0,(p.reactions.heart||0)-1);
+    delete p.reactedBy[uid];
+    p.myReaction = null;
+  } else {
+    p.reactions.heart = (p.reactions.heart||0)+1;
+    p.reactedBy[uid] = 'heart';
+    p.myReaction = 'heart';
+  }
+}
+function refreshNewsSurfaces(){
+  if(document.getElementById('view-news')?.classList.contains('active')) renderNews();
+  if(document.getElementById('view-homeapp')?.classList.contains('active')) renderHome();
 }
 function toggleSaveNews(id){
   const p = DB.posts.find(x=>x.id===id);
@@ -2701,7 +2733,7 @@ function renderEvents(){
         <div class="meta">🕐 ${e.time}</div>
         <div class="meta">📍 ${e.location}</div>
         <div class="meta">👤 ${e.organizer}</div>
-        <p style="font-size:13px;color:var(--ink-soft);margin:8px 0 10px;">${e.desc}</p>
+        <p style="font-size:13px;color:var(--ink-soft);margin:8px 0 10px;white-space:pre-wrap;">${e.desc}</p>
         <div class="row">
           <button class="btn btn-sm ${e.interestedByMe?'btn-danger':'btn-outline'}" onclick="toggleInterested('${e.id}')">${e.interestedByMe?'❤️':'♡'} Interested (${e.interested})</button>
           <button class="btn btn-outline btn-sm" onclick="toggleSaveEvent('${e.id}')">🔖</button>
@@ -3553,6 +3585,7 @@ function renderAdminTabContent(){
       <div class="field"><input type="text" id="adminEvName" placeholder="Event name"></div>
       <div class="field-row"><input type="text" id="adminEvDate" placeholder="Date e.g. Sep 5"><input type="text" id="adminEvTime" placeholder="Time e.g. 5:00 PM"></div>
       <div class="field"><input type="text" id="adminEvLoc" placeholder="Location"></div>
+      <div class="field"><label>Description</label><textarea id="adminEvDesc" rows="3" placeholder="e.g. Tickets: chat +234... on WhatsApp, or any other details"></textarea></div>
       <div class="field"><label>Photo — flyer, ticket, poster (optional)</label><input type="file" id="adminEvImage" accept="image/*" onchange="previewAdminEvImage()"><small class="hint">Auto-compressed — no cloud storage needed.</small></div>
       <div id="adminEvImagePreview"></div>
       <button class="btn btn-primary btn-sm" id="adminEvPublishBtn" onclick="adminPublishEvent()">Publish Event</button>
@@ -3784,7 +3817,7 @@ function adminPublishEvent(){
       date: document.getElementById('adminEvDate').value || 'TBA',
       time: document.getElementById('adminEvTime').value || 'TBA',
       location: document.getElementById('adminEvLoc').value || 'TBA',
-      organizer:'UniLink Admin', desc:'Official UniLink event.',
+      organizer:'UniLink Admin', desc: document.getElementById('adminEvDesc').value.trim() || 'Official UniLink event.',
       imageData: imageData||null,
       interested:0, interestedBy:{},
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -3794,6 +3827,7 @@ function adminPublishEvent(){
       document.getElementById('adminEvDate').value='';
       document.getElementById('adminEvTime').value='';
       document.getElementById('adminEvLoc').value='';
+      document.getElementById('adminEvDesc').value='';
       document.getElementById('adminEvImage').value='';
       document.getElementById('adminEvImagePreview').innerHTML='';
       renderAdmin();
