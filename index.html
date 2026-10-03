@@ -1837,8 +1837,8 @@ function renderLeaderboard(){
     const streak = effectiveLoginStreak(s);
     return `<div class="leader-row" style="${s.id===u.id?'background:rgba(37,99,255,.06);border-radius:10px;':''}">
       <div class="leader-rank ${rankClass}">${medal}</div>
-      <div class="avatar-circle" style="width:34px;height:34px;font-size:12px;">${initials(s.name)}</div>
-      <div><div style="font-size:13.5px;font-weight:700;">${s.name}${s.id===u.id?' (You)':''}</div><div style="font-size:11.5px;color:var(--ink-soft);">${streak>0?`🔥 ${streak}-day streak`:'No active streak'}</div></div>
+      <div class="avatar-circle" style="width:34px;height:34px;font-size:12px;cursor:pointer;" onclick="viewUserProfile('${s.id}')">${initials(s.name)}</div>
+      <div style="cursor:pointer;" onclick="viewUserProfile('${s.id}')"><div style="font-size:13.5px;font-weight:700;">${s.name}${s.id===u.id?' (You)':''}</div><div style="font-size:11.5px;color:var(--ink-soft);">${streak>0?`🔥 ${streak}-day streak`:'No active streak'}</div></div>
       <div class="leader-pts">${effectivePoints(s)} pts</div>
     </div>`;
   }).join('') : emptyState('🏆','Loading leaderboard…','Hang tight, connecting to UniLink.');
@@ -1977,7 +1977,7 @@ function postCard(p){
       <button class="aitem" onclick="sharePost('${p.id}')">↗️ Share</button>
     </div>
     <div class="comments-box ${isOpen?'':'hidden'}" id="comments-${p.id}">
-      ${(p.comments||[]).map(c=>`<div class="comment"><div class="avatar-circle" style="width:26px;height:26px;font-size:10px;">${initials(c.name)}</div><div><div class="cname">${c.name}</div><div class="ctext">${c.text}</div><div class="cactions"><button>Like</button><button>Reply</button>${c.uid===DB.currentUserId?`<button onclick="deleteComment('${p.id}','${c.id}')">Delete</button>`:`<button>Report</button>`}</div></div></div>`).join('')}
+      ${(p.comments||[]).map(c=>`<div class="comment"><div class="avatar-circle" style="width:26px;height:26px;font-size:10px;cursor:pointer;" onclick="viewUserProfile('${c.uid}')">${initials(c.name)}</div><div><div class="cname" style="cursor:pointer;" onclick="viewUserProfile('${c.uid}')">${c.name}</div><div class="ctext">${c.text}</div><div class="cactions"><button>Like</button><button>Reply</button>${c.uid===DB.currentUserId?`<button onclick="deleteComment('${p.id}','${c.id}')">Delete</button>`:`<button>Report</button>`}</div></div></div>`).join('')}
       <div class="comment-input-row"><input type="text" placeholder="Write a comment..." id="cin-${p.id}" onkeydown="if(event.key==='Enter')addComment('${p.id}')"><button onclick="addComment('${p.id}')">Post</button></div>
     </div>
   </div>`;
@@ -2455,8 +2455,9 @@ function viewProduct(id){
       <div class="product-img" style="border-radius:14px;height:160px;">${p.emoji||'📦'}</div>
       <h2 style="margin:14px 0 4px;">${p.price}</h2>
       <p style="color:var(--ink-soft);font-size:14px;">${p.desc}</p>
-      <div class="helper-note">Sold by ${p.sellerName||'Seller'} ${p.sellerVerification==='verified'?'— ✓ Verified UniLink Seller':''} ${rating?`· <span class="stars">★</span> ${rating} (${seller.ratings.length})`:'· No ratings yet'}. UniLink verification confirms seller approval, not individual transactions. 📍 ${p.location}</div>
+      <div class="helper-note">Sold by <span style="cursor:pointer;text-decoration:underline;" onclick="closeModal();viewUserProfile('${p.sellerId}')">${p.sellerName||'Seller'}</span> ${p.sellerVerification==='verified'?'— ✓ Verified UniLink Seller':''} ${rating?`· <span class="stars">★</span> ${rating} (${seller.ratings.length})`:'· No ratings yet'}. UniLink verification confirms seller approval, not individual transactions. 📍 ${p.location}</div>
       <div class="form-actions">
+        <button class="btn btn-outline" onclick="closeModal();viewUserProfile('${p.sellerId}')">View Profile</button>
         <button class="btn btn-primary btn-block" onclick="closeModal();messageUser('${p.sellerId}','${(p.sellerName||'Seller').replace(/'/g,"\\'")}')">Message Seller</button>
         <button class="btn btn-outline" onclick="openRateModal('${p.sellerId}')">★ Rate Seller</button>
       </div>
@@ -3040,7 +3041,7 @@ function renderMessages(){
     const streak = effectiveStreak(c);
     const unread = c.unreadCount||0;
     return `<div class="conv-item" onclick="openConversation('${c.id}')">
-      <div class="avatar-circle">${initials(c.otherName)}</div>
+      <div class="avatar-circle" onclick="event.stopPropagation();viewUserProfile('${c.otherId}')" style="cursor:pointer;">${initials(c.otherName)}</div>
       <div class="cbody"><div class="cname">${c.otherName} ${streak>0?`<span style="font-size:11px;color:#FBBF24;">🔥${streak}</span>`:''}</div><div class="clast" style="${unread>0?'color:#fff;font-weight:600;':''}">${c.lastMessage||'Say hello 👋'}</div></div>
       ${unread>0?`<span class="conv-unread-badge">${unread>9?'9+':unread}</span>`:''}
     </div>`;
@@ -3141,8 +3142,8 @@ function renderConversation(){
     <div class="chat-wrap card">
       <div class="chat-header">
         <button class="icon-btn" onclick="showView('messages')">←</button>
-        <div class="avatar-circle">${initials(conv.otherName)}</div>
-        <div style="flex:1;"><strong style="font-size:14.5px;">${conv.otherName}</strong><div id="convStreakBadge" style="font-size:11.5px;color:#FBBF24;">${streak>0?`🔥 ${streak}-day streak`:''}</div></div>
+        <div class="avatar-circle" onclick="viewUserProfile('${conv.otherId}')" style="cursor:pointer;">${initials(conv.otherName)}</div>
+        <div style="flex:1;cursor:pointer;" onclick="viewUserProfile('${conv.otherId}')"><strong style="font-size:14.5px;">${conv.otherName}</strong><div id="convStreakBadge" style="font-size:11.5px;color:#FBBF24;">${streak>0?`🔥 ${streak}-day streak`:''}</div></div>
         <button class="icon-btn" onclick="openChatMenu('${conv.id}')">⋮</button>
       </div>
       ${banner}
@@ -3252,7 +3253,7 @@ function renderWorldChat(){
   const el = document.getElementById('worldChatMsgs');
   el.innerHTML = DB.worldChat.map(m=>{
     const isMe = m.from===u.id;
-    return `<div class="bubble ${isMe?'me':'them'}">${isMe?'':`<div style="font-size:11.5px;font-weight:700;opacity:.75;margin-bottom:2px;">${m.fromName||'Student'}</div>`}${m.text}</div>`;
+    return `<div class="bubble ${isMe?'me':'them'}">${isMe?'':`<div style="font-size:11.5px;font-weight:700;opacity:.75;margin-bottom:2px;cursor:pointer;" onclick="viewUserProfile('${m.from}')">${m.fromName||'Student'}</div>`}${m.text}</div>`;
   }).join('') || emptyState('🌍','World Chat is quiet right now','Be the first to say something!');
   setTimeout(()=>{ el.scrollTop = el.scrollHeight; },0);
 }
