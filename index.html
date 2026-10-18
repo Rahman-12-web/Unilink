@@ -1175,7 +1175,7 @@ const fbDb = firebase.firestore();
 // visited shows instantly from cache while it syncs with the server in the
 // background, instead of waiting on a fresh network round-trip every time.
 fbDb.enablePersistence({synchronizeTabs:true}).catch(err=>console.warn('Firestore persistence not enabled:', err.code));
-const ADMIN_EMAILS_FB = ['adediranjohn08@gmail.com','abdulrahmamayomide@gmail.com','amplicue@gmail.com','oyinkansolaariyo480@gmail.com'];
+const ADMIN_EMAILS_FB = ['adediranjohn08@gmail.com','abdulrahmamayomide@gmail.com','amplicue@gmail.com','oyinkansolaariyo480@gmail.com','oluwaanu08@gmail.com','emmanuelajibola195@gmail.com'];
 let worldChatUnsub = null;
 let postsUnsub = null;
 // Same purpose as conversationsEverSynced for Messages: true once the very
@@ -3523,6 +3523,14 @@ function renderAdminTabContent(){
   if(activeAdminTab==='overview'){
     const topPosts = DB.posts.slice().sort((a,b)=>reactionTotal(b)-reactionTotal(a)).slice(0,3);
     el.innerHTML = `<div class="card" style="padding:18px;margin-bottom:14px;"><p style="font-size:14px;color:var(--ink-soft);margin:0;">Welcome to the UniLink Admin Dashboard. Use the tabs above to review verification requests, applications, moderate content, and manage the community features.</p></div>
+    <div class="card" style="padding:16px;margin-bottom:14px;">
+      <div style="font-size:13px;font-weight:700;color:var(--ink-soft);margin-bottom:8px;">🛠️ Promote a Student to Admin</div>
+      <p style="font-size:12px;color:var(--ink-soft);margin:0 0 10px;">Already have an account but can't see the Admin Dashboard? Enter their email or username and promote them here.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input id="adminPromoteEmail" type="text" placeholder="student email or username" style="flex:1;min-width:180px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);">
+        <button class="btn btn-primary btn-sm" onclick="adminPromoteToAdmin()">Make Admin</button>
+      </div>
+    </div>
     <div class="card" style="padding:16px;">
       <div style="font-size:13px;font-weight:700;color:var(--ink-soft);margin-bottom:8px;">🔥 Top Reacted Posts</div>
       ${topPosts.map(p=>`<div class="admin-table-row"><div class="main"><strong>${p.authorName}</strong><span>${p.text.slice(0,50)}...</span></div><span class="leader-pts">${reactionTotal(p)}</span></div>`).join('')}
@@ -3644,6 +3652,21 @@ function adminAppList(type){
     ${a.status==='approved'?`<button class="btn btn-danger btn-sm" onclick="adminRevoke('${a.id}')">Revoke</button>`:''}
     </div></div>`;
   }).join('');
+}
+function adminPromoteToAdmin(){
+  const input = document.getElementById('adminPromoteEmail');
+  const email = (input.value||'').trim().toLowerCase();
+  if(!email){ toast('Enter the email or username first.'); return; }
+  const u = DB.users.find(x=>(x.email||'').toLowerCase()===email || (x.username||'').toLowerCase()===email);
+  if(!u){ toast('No student found with that email/username.'); return; }
+  if(u.role==='admin'){ toast(`${u.name} is already an admin.`); return; }
+  if(!confirm(`Make ${u.name} (${u.email}) an admin? They'll get full Admin Dashboard access.`)) return;
+  fbDb.collection('users').doc(u.id).update({role:'admin'}).then(()=>{
+    u.role = 'admin';
+    toast(`${u.name} is now an admin.`);
+    input.value = '';
+    renderAdmin();
+  }).catch(err=>toast(err.message));
 }
 function adminVerify(uid,ok){
   const u = DB.users.find(x=>x.id===uid);
